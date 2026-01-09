@@ -1,0 +1,494 @@
+import asyncio
+import functools
+import inspect
+import json
+import os
+import random
+import time
+from contextvars import ContextVar
+from datetime import datetime
+from typing import Any, Callable, Dict, Optional
+
+from dotenv import load_dotenv
+from opentelemetry import trace
+from opentelemetry.context import get_current
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import SpanKind, Status, StatusCode
+
+import observix.exporter as exporter_module
+from observix.exporter import HttpObservationExporter, HttpTraceExporter
+from observix.schema import Observation
+
+# Load env variables from .env file if present
+load_dotenv()
+
+_TRACER_NAME = "obs-sdk"
+
+# ContextVar to track the current observation ID for parent-child relationship
+_current_observation_id: ContextVar[Optional[int]] = ContextVar(
+    "current_observation_id", default=None
+)
+
+
+def init_observability(
+    url: Optional[str] = None,
+    api_key: Optional[str] = None
+):
+    """
+    Initialize the observability SDK.
+    Configuration can be provided via arguments or environment variables:
+    - OBS_HOST or OBS_URL (e.g., http://localhost:8000)
+    - OBS_API_KEY
+    """
+    url = url or os.getenv("OBS_HOST") or os.getenv("OBS_URL")
+    api_key = api_key or os.getenv("OBS_API_KEY")
+
+    if not url:
+        print("[ObsSDK] Warning: OBS_HOST not found. Observability disabled.")
+        return
+        
+    if not api_key:
+        print("[ObsSDK] Warning: OBS_API_KEY not found. Observability disabled.")
+        return
+
+    # --- initialize provider only once ---
+    provider = trace.get_tracer_provider()
+    if (
+        isinstance(provider, trace.ProxyTracerProvider) or 
+        not isinstance(provider, TracerProvider)
+    ):
+        provider = TracerProvider()
+        trace.set_tracer_provider(provider)
+
+    # Use BatchSpanProcessor for production performance
+    exporter = HttpTraceExporter(url, api_key)
+    processor = BatchSpanProcessor(exporter)
+    provider.add_span_processor(processor)
+
+    # --- initialize observation exporter ---
+    exporter_module.observation_exporter_instance = HttpObservationExporter(
+        url, api_key
+    )
+    
+    print(f"[ObsSDK] Initialized with Host: {url}")
+
+
+# Try to auto-initialize if configured
+if (os.getenv("OBS_HOST") or os.getenv("OBS_URL")) and os.getenv("OBS_API_KEY"):
+    try:
+        init_observability()
+    except Exception as e:
+        print(f"[ObsSDK] Auto-initialization failed: {e}")
+
+
+def _extract_token_usage(result: Any) -> Optional[Dict[str, int]]:
+    usage = None
+    # OpenAI object style
+    if hasattr(result, "usage") and result.usage:
+        usage = result.usage
+        return {
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+            "completion_tokens": getattr(usage, "completion_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        }
+    
+    # Dict style (e.g. dict response)
+    if isinstance(result, dict) and "usage" in result:
+        usage = result["usage"]
+        if isinstance(usage, dict):
+             return {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            }
+            
+    # Langchain AIMessage style
+    if hasattr(result, "response_metadata"):
+        meta = getattr(result, "response_metadata", {})
+        if "token_usage" in meta:
+             usage = meta["token_usage"]
+             # Langchain usages might differ in keys, but usually standard
+             return {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            }
+            
+    return None
+def _extract_cost(result: Any) -> Optional[float]:
+    # OpenAI object style logic not standard for cost, but some proxies provide it
+    if hasattr(result, "cost"):
+        return float(result.cost)
+        
+    # Check "usage" dict for cost (some providers)
+    if isinstance(result, dict) and "usage" in result:
+        usage = result["usage"]
+        if isinstance(usage, dict) and "cost" in usage:
+             return float(usage["cost"])
+        if isinstance(usage, dict) and "total_cost" in usage:
+             return float(usage["total_cost"])
+
+    # Langchain AIMessage style
+    if hasattr(result, "response_metadata"):
+        meta = getattr(result, "response_metadata", {})
+        if "cost" in meta:
+             return float(meta["cost"])
+        if "total_cost" in meta:
+             return float(meta["total_cost"])
+        # Check token_usage for cost
+        if "token_usage" in meta:
+             usage = meta["token_usage"]
+             if isinstance(usage, dict) and "cost" in usage:
+                  return float(usage["cost"])
+             if isinstance(usage, dict) and "total_cost" in usage:
+                  return float(usage["total_cost"])
+                  
+    return None
+
+
+def _extract_model_name(kwargs: Dict, result: Any) -> Optional[str]:
+    # Check input kwargs first
+    if "model" in kwargs:
+        return str(kwargs["model"])
+        
+    # Check result object
+    if hasattr(result, "model"):
+        return str(result.model)
+    
+    # Check dict result
+    if isinstance(result, dict) and "model" in result:
+        return str(result["model"])
+        
+    return None
+
+def trace_decorator(
+    name: Optional[str] = None,
+    attributes: Optional[Dict[str, Any]] = None,
+    record_observation: bool = True,
+):
+    def wrapper(func: Callable):
+        func_name = name or func.__name__
+        tracer = trace.get_tracer(_TRACER_NAME)
+
+        @functools.wraps(func)
+        def inner(*args, **kwargs):
+            # Capture start time properties
+            start_time = time.time()
+            
+            obs_id = random.getrandbits(63)
+            # Get parent observation ID from context
+            parent_obs_id = _current_observation_id.get()
+            
+            # Set current observation ID for children
+            token = _current_observation_id.set(obs_id)
+            
+            # Start Span
+            parent_context = get_current()
+            
+            with tracer.start_as_current_span(
+                func_name,
+                context=parent_context,
+                kind=SpanKind.INTERNAL
+            ) as span:
+                span.set_attribute("observation_id", str(obs_id))
+                if parent_obs_id:
+                     span.set_attribute("parent_observation_id", str(parent_obs_id))
+                
+                if attributes:
+                    for k, v in attributes.items(): 
+                        span.set_attribute(k, v)
+
+                def create_observation(
+                    span, args, kwargs, result=None, exc=None,
+                    obs_id=None, parent_obs_id=None
+                ):
+                    exporter = exporter_module.observation_exporter_instance
+                    if not record_observation or exporter is None:
+                        return
+
+                    end_time_val = time.time()
+                    
+                    obs = Observation(
+                        id=obs_id or random.getrandbits(63),
+                        parent_observation_id=parent_obs_id, # Link to parent
+                        name=func_name,
+                        type="function",
+                        start_time=int(start_time * 1e9),
+                        end_time=int(end_time_val * 1e9), # nanoseconds
+                        metadata_json=json.dumps(span.attributes, default=str),
+                        observation_type="decorator",
+                        trace_id=f"{span.get_span_context().trace_id:032x}",
+                        created_at=datetime.utcnow(),
+                    )
+                    
+                    # Careful with JSON dumping arbitrary objects
+                    try:
+                         obs.input_text = json.dumps(
+                             {"args": args, "kwargs": kwargs}, default=str
+                         )
+                    except Exception:
+                         obs.input_text = json.dumps(
+                             {"args": str(args), "kwargs": str(kwargs)}
+                         )
+                    
+                    if result is not None:
+                        try:
+                             # Try dumping result
+                             obs.output_text = json.dumps(result, default=str)
+                        except Exception:
+                             obs.output_text = str(result)
+                    else:
+                        obs.output_text = ""
+    
+                    if result is not None:
+                         obs.token_usage = _extract_token_usage(result)
+                         obs.model = _extract_model_name(kwargs, result)
+                         obs.total_cost = _extract_cost(result)
+                    else:
+                         obs.token_usage = None
+                         obs.model = _extract_model_name(kwargs, None)
+                         obs.total_cost = None
+
+                    obs.model_parameters = None # Could extract from kwargs if needed
+                    
+                    if exc:
+                         obs.error = str(exc)
+    
+                    try:
+                        exporter.enqueue(obs)
+                    except Exception as obs_exc:
+                        # do not break tracing if observation fails
+                        print(
+                            f"[ObsWarning] Failed to create observation: {obs_exc}"
+                        )
+
+                if asyncio.iscoroutinefunction(func):
+                    # We need to define an async wrapper to await the function
+                    async def async_inner_wrapper(*args, **kwargs):
+                        try:
+                            result = await func(*args, **kwargs)
+                            create_observation(
+                                span, args, kwargs, result=result,
+                                obs_id=obs_id, parent_obs_id=parent_obs_id
+                            )
+                            return result
+                        except Exception as exc:
+                            span.record_exception(exc)
+                            span.set_status(Status(StatusCode.ERROR))
+                            create_observation(
+                                span, args, kwargs, exc=exc,
+                                obs_id=obs_id, parent_obs_id=parent_obs_id
+                            )
+                            raise
+                        finally:
+                            span.set_attribute(
+                                "duration_ms", (time.time() - start_time) * 1000
+                            )
+                            _current_observation_id.reset(token)
+                    
+                    return asyncio.run(async_inner_wrapper(*args, **kwargs))
+                else:
+                    try:
+                        result = func(*args, **kwargs)
+                        create_observation(
+                            span, args, kwargs, result=result,
+                            obs_id=obs_id, parent_obs_id=parent_obs_id
+                        )
+                        return result
+                    except Exception as exc:
+                        span.record_exception(exc)
+                        span.set_status(Status(StatusCode.ERROR))
+                        create_observation(
+                            span, args, kwargs, exc=exc,
+                            obs_id=obs_id, parent_obs_id=parent_obs_id
+                        )
+                        raise
+                    finally:
+                        span.set_attribute(
+                            "duration_ms", (time.time() - start_time) * 1000
+                        )
+                        _current_observation_id.reset(token)
+
+        # For async functions, we want to return the async wrapper directly
+        # BUT our inner function here is sync because it sets up text context?
+        # Actually for async functions, the decorator returns a sync wrapper that
+        # returns a coroutine OR it returns an async wrapper.
+        # My implementation above `inner` is sync, and it calls `asyncio.run`
+        # if the wrapped function is async. This blocks!
+        # This is WRONG for async functions. Async functions should return a coroutine.
+        
+        if inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_main_wrapper(*args, **kwargs):
+                # Capture start time properties
+                start_time = time.time()
+                
+                obs_id = random.getrandbits(63)
+                parent_obs_id = _current_observation_id.get()
+                token = _current_observation_id.set(obs_id)
+                
+                # Start Span
+                parent_context = get_current()
+                
+                with tracer.start_as_current_span(
+                    func_name,
+                    context=parent_context,
+                    kind=SpanKind.INTERNAL
+                ) as span:
+                    span.set_attribute("observation_id", str(obs_id))
+                    if parent_obs_id:
+                         span.set_attribute(
+                             "parent_observation_id", str(parent_obs_id)
+                         )
+                    
+                    if attributes:
+                        for k, v in attributes.items(): 
+                            span.set_attribute(k, v)
+
+                    def create_observation_async(
+                        span, args, kwargs, result=None, exc=None,
+                        obs_id=None, parent_obs_id=None
+                    ):
+                        exporter = exporter_module.observation_exporter_instance
+                        if not record_observation or exporter is None:
+                            return
+
+                        end_time_val = time.time()
+                        
+                        obs = Observation(
+                            id=obs_id or random.getrandbits(63),
+                            parent_observation_id=parent_obs_id,
+                            name=func_name,
+                            type="function",
+                            start_time=int(start_time * 1e9),
+                            end_time=int(end_time_val * 1e9),
+                            metadata_json=json.dumps(span.attributes, default=str),
+                            observation_type="decorator",
+                            trace_id=f"{span.get_span_context().trace_id:032x}",
+                            created_at=datetime.utcnow(),
+                        )
+                        
+                        try:
+                             obs.input_text = json.dumps(
+                                 {"args": args, "kwargs": kwargs}, default=str
+                             )
+                        except Exception:
+                             obs.input_text = json.dumps(
+                                 {"args": str(args), "kwargs": str(kwargs)}
+                             )
+                        
+                        if result is not None:
+                            try:
+                                 obs.output_text = json.dumps(result, default=str)
+                            except Exception:
+                                 obs.output_text = str(result)
+                        else:
+                            obs.output_text = ""
+        
+                        if result is not None:
+                             obs.token_usage = _extract_token_usage(result)
+                             obs.model = _extract_model_name(kwargs, result)
+                             obs.total_cost = _extract_cost(result)
+                        else:
+                             obs.token_usage = None
+                             obs.model = _extract_model_name(kwargs, None)
+                             obs.total_cost = None
+
+                        obs.model_parameters = None
+                        
+                        if exc:
+                             obs.error = str(exc)
+        
+                        try:
+                            exporter.enqueue(obs)
+                        except Exception as obs_exc:
+                            print(
+                                f"[ObsWarning] Failed to create observation: {obs_exc}"
+                            )
+
+                    try:
+                        result = await func(*args, **kwargs)
+                        create_observation_async(
+                            span, args, kwargs, result=result,
+                            obs_id=obs_id, parent_obs_id=parent_obs_id
+                        )
+                        return result
+                    except Exception as exc:
+                        span.record_exception(exc)
+                        span.set_status(Status(StatusCode.ERROR))
+                        create_observation_async(
+                            span, args, kwargs, exc=exc,
+                            obs_id=obs_id, parent_obs_id=parent_obs_id
+                        )
+                        raise
+                    finally:
+                        span.set_attribute(
+                            "duration_ms", (time.time() - start_time) * 1000
+                        )
+                        _current_observation_id.reset(token)
+            
+            return async_main_wrapper
+        
+        else:
+            return inner
+
+    return wrapper
+
+def record_score(
+    name: str,
+    score: float,
+    trace_id: Optional[str] = None,
+    observation_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    reason: Optional[str] = None
+):
+    """
+    Record an evaluation score as an observation.
+    
+    Args:
+        name: Name of the metric (e.g. "faithfulness")
+        score: The numerical score value
+        trace_id: ID of the trace being evaluated (optional, defaults to current context)
+        observation_id: ID of the specific observation being evaluated (optional)
+        metadata: Additional metadata
+        reason: Explanation for the score
+    """
+    exporter = exporter_module.observation_exporter_instance
+    if exporter is None:
+        return
+
+    # Use current trace context if not provided
+    if not trace_id:
+        span = trace.get_current_span()
+        if span.get_span_context().is_valid:
+            trace_id = f"{span.get_span_context().trace_id:032x}"
+        else:
+            trace_id = f"{random.getrandbits(128):032x}"
+
+    obs_id = random.getrandbits(63)
+    start_time = time.time()
+    
+    meta = metadata or {}
+    if reason:
+        meta["reason"] = reason
+    if observation_id:
+        meta["evaluated_observation_id"] = observation_id
+
+    obs = Observation(
+        id=obs_id,
+        name=name,
+        type="score",
+        start_time=int(start_time * 1e9),
+        end_time=int(start_time * 1e9), # Instantaneous
+        input_text=json.dumps(meta) if meta else None,
+        output_text=str(score), # Store score as string in output_text
+        trace_id=trace_id,
+        metadata_json=json.dumps(meta, default=str),
+        created_at=datetime.utcnow(),
+    )
+
+    try:
+        exporter.enqueue(obs)
+    except Exception as e:
+        print(f"[ObsWarning] Failed to record score: {e}")
