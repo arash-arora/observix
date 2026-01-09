@@ -1,5 +1,5 @@
 [project]
-name = "observability-stack"
+name = "observix"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
