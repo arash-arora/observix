@@ -1645,12 +1645,14 @@ wheels = [
 ]
 
 [[package]]
-name = "observability-stack"
+name = "observix"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "arize-phoenix-evals" },
     { name = "clickhouse-driver" },
     { name = "clickhouse-sqlalchemy" },
+    { name = "deepeval" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "langchain-groq" },
@@ -1660,6 +1662,7 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "ragas" },
     { name = "sqlalchemy" },
 ]
 
@@ -1679,9 +1682,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "arize-phoenix-evals", specifier = ">=2.7.1" },
     { name = "arize-phoenix-evals", marker = "extra == 'eval'" },
     { name = "clickhouse-driver", specifier = ">=0.2.7" },
     { name = "clickhouse-sqlalchemy", specifier = ">=0.3.0" },
+    { name = "deepeval", specifier = ">=3.7.7" },
     { name = "deepeval", marker = "extra == 'eval'", specifier = ">=0.21.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "langchain-core", specifier = ">=0.1.52" },
@@ -1692,6 +1697,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.24.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "ragas", specifier = ">=0.4.2" },
     { name = "ragas", marker = "extra == 'eval'", specifier = ">=0.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.29" },
 ]

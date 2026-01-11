@@ -1,6 +1,6 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from obs_sdk import ChatGroq
+from observix.llm.langchain import ChatGroq
 
 message = ChatGroq(model="openai/gpt-oss-120b").invoke([
     SystemMessage(content="Hello, world!"),

@@ -1,8 +1,8 @@
 import logging
 from typing import List, Optional, Any
 
-from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.schema import Trace
+from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.evaluation.trace_utils import extract_eval_params
 
 logger = logging.getLogger(__name__)

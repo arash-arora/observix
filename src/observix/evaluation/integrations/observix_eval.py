@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List
 from dotenv import load_dotenv
 
 # Load env vars
@@ -23,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 # Try importing OpenAI client
 try:
-    from openai import OpenAI, AzureOpenAI
+    from observix.llm.openai import OpenAI, AzureOpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
     OpenAI = object
     AzureOpenAI = object
 
-class ObsEvalLLM:
+class ObservixEvalLLM:
     """
     Wrapper for LLM clients (OpenAI, Azure, Groq) to unify generation.
     """
@@ -90,11 +90,11 @@ class ObsEvalLLM:
             logger.error(f"LLM Generation failed: {e}")
             raise e
 
-class ObsEvalEvaluator(Evaluator):
+class ObservixEvalEvaluator(Evaluator):
     """
     Base class for ObsEval metrics using LLM.
     """
-    def __init__(self, metric_name: str, prompt_template: str, llm: ObsEvalLLM):
+    def __init__(self, metric_name: str, prompt_template: str, llm: ObservixEvalLLM):
         self._name = metric_name
         self.prompt_template = prompt_template
         self.llm = llm
@@ -206,36 +206,36 @@ class ObsEvalEvaluator(Evaluator):
             )
 
 # Specific Evaluators
-class ToolSelectionEvaluator(ObsEvalEvaluator):
-    def __init__(self, llm: ObsEvalLLM):
+class ToolSelectionEvaluator(ObservixEvalEvaluator):
+    def __init__(self, llm: ObservixEvalLLM):
         super().__init__("tool_selection", TOOL_SELECTION_PROMPT_TEMPLATE, llm)
 
-class ToolInputStructureEvaluator(ObsEvalEvaluator):
-    def __init__(self, llm: ObsEvalLLM):
+class ToolInputStructureEvaluator(ObservixEvalEvaluator):
+    def __init__(self, llm: ObservixEvalLLM):
         super().__init__("tool_input_structure", TOOL_INPUT_STRUCTURE_PROMPT_TEMPLATE, llm)
 
-class ToolSequenceEvaluator(ObsEvalEvaluator):
-    def __init__(self, llm: ObsEvalLLM):
+class ToolSequenceEvaluator(ObservixEvalEvaluator):
+    def __init__(self, llm: ObservixEvalLLM):
         super().__init__("tool_sequence", TOOL_SEQUENCE_PROMPT_TEMPLATE, llm)
 
-class AgentRoutingEvaluator(ObsEvalEvaluator):
-    def __init__(self, llm: ObsEvalLLM):
+class AgentRoutingEvaluator(ObservixEvalEvaluator):
+    def __init__(self, llm: ObservixEvalLLM):
         super().__init__("agent_routing", AGENT_ROUTING_PROMPT_TEMPLATE, llm)
 
-class HITLEvaluator(ObsEvalEvaluator):
-    def __init__(self, llm: ObsEvalLLM):
+class HITLEvaluator(ObservixEvalEvaluator):
+    def __init__(self, llm: ObservixEvalLLM):
         super().__init__("hitl_evaluation", HITL_PROMPT_TEMPLATE, llm)
 
-class WorkflowCompletionEvaluator(ObsEvalEvaluator):
-    def __init__(self, llm: ObsEvalLLM):
+class WorkflowCompletionEvaluator(ObservixEvalEvaluator):
+    def __init__(self, llm: ObservixEvalLLM):
         super().__init__("workflow_completion", WORKFLOW_COMPLETION_PROMPT_TEMPLATE, llm)
 
-class CustomMetricEvaluator(ObsEvalEvaluator):
-    def __init__(self, llm: ObsEvalLLM):
+class CustomMetricEvaluator(ObservixEvalEvaluator):
+    def __init__(self, llm: ObservixEvalLLM):
         super().__init__("custom_metric", CUSTOM_METRIC_PROMPT_TEMPLATE, llm)
 
 # Unified Facade (Optional)
-class ObsEval:
+class ObservixEval:
     def __init__(
         self,
         client_type: str = "openai",
@@ -246,7 +246,7 @@ class ObsEval:
         azure_deployment: Optional[str] = None,
         api_version: Optional[str] = None
     ):
-        self.llm = ObsEvalLLM(
+        self.llm = ObservixEvalLLM(
             model=model,
             api_key=api_key,
             base_url=base_url,

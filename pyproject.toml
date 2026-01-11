@@ -17,6 +17,9 @@ dependencies = [
     "langchain-groq>=0.1.3",
     "langchain-openai>=0.1.1",
     "langchain-core>=0.1.52",
+    "deepeval>=3.7.7",
+    "ragas>=0.4.2",
+    "arize-phoenix-evals>=2.7.1",
 ]
 
 [project.optional-dependencies]

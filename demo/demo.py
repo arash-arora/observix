@@ -3,7 +3,7 @@ import time
 
 from sqlalchemy import create_engine, text
 
-from obs_sdk import trace_decorator
+from observix import observe
 
 
 def run_demo():
@@ -13,17 +13,17 @@ def run_demo():
     
     print("running functions...")
 
-    @trace_decorator(name="calculate_sum")
+    @observe(name="calculate_sum")
     def calculate_sum(a, b):
         time.sleep(0.1)
         return a + b
 
-    @trace_decorator(name="async_multiply")
+    @observe(name="async_multiply")
     async def multiply(a, b):
         await asyncio.sleep(0.1)
         return a * b
 
-    @trace_decorator(name="risky_function")
+    @observe(name="risky_function")
     def risky_function():
         raise ValueError("Oops! Something went wrong.")
 

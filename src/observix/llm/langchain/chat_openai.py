@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI
 from langchain_openai import ChatOpenAI as _ChatOpenAI
 
-from observix.instrumentation import trace_decorator
+from observix.instrumentation import observe
 
 
 class ChatOpenAI(_ChatOpenAI):
@@ -12,7 +12,7 @@ class ChatOpenAI(_ChatOpenAI):
     automatically traces calls using obs_sdk.
     """
     
-    @trace_decorator(name="ChatOpenAI.invoke")
+    @observe(name="ChatOpenAI.invoke")
     def invoke(
         self,
         input: Any,
@@ -21,7 +21,7 @@ class ChatOpenAI(_ChatOpenAI):
     ) -> Any:
         return super().invoke(input, config=config, **kwargs)
 
-    @trace_decorator(name="ChatOpenAI.ainvoke")
+    @observe(name="ChatOpenAI.ainvoke")
     async def ainvoke(
         self,
         input: Any,
@@ -36,7 +36,7 @@ class AzureChatOpenAI(_AzureChatOpenAI):
     automatically traces calls using obs_sdk.
     """
     
-    @trace_decorator(name="AzureChatOpenAI.invoke")
+    @observe(name="AzureChatOpenAI.invoke")
     def invoke(
         self,
         input: Any,
@@ -45,7 +45,7 @@ class AzureChatOpenAI(_AzureChatOpenAI):
     ) -> Any:
         return super().invoke(input, config=config, **kwargs)
 
-    @trace_decorator(name="AzureChatOpenAI.ainvoke")
+    @observe(name="AzureChatOpenAI.ainvoke")
     async def ainvoke(
         self,
         input: Any,

@@ -1,10 +1,10 @@
 from typing import Any
 
-from observix.langchain.chat_openai import AzureOpenAI as _AzureOpenAI
-from observix.langchain.chat_openai import OpenAI as _OpenAI
+from openai import AzureOpenAI as _AzureOpenAI
+from openai import OpenAI as _OpenAI
 from openai.resources.chat.completions import Completions
 
-from observix.instrumentation import trace_decorator
+from observix.instrumentation import observe
 
 
 class WrappedCompletions(Completions):
@@ -14,7 +14,7 @@ class WrappedCompletions(Completions):
     def __init__(self, client):
         super().__init__(client)
 
-    @trace_decorator(name="OpenAI.chat.completions.create")
+    @observe(name="OpenAI.chat.completions.create")
     def create(self, *args, **kwargs) -> Any:
         return super().create(*args, **kwargs)
 
@@ -28,7 +28,7 @@ class OpenAI(_OpenAI):
         # Monkey-patch the chat.completions object instance
         original_create = self.chat.completions.create
         
-        @trace_decorator(name="OpenAI.chat.completions.create")
+        @observe(name="OpenAI.chat.completions.create")
         def wrapped_create(*args, **kwargs):
             return original_create(*args, **kwargs)
             
@@ -44,7 +44,7 @@ class AzureOpenAI(_AzureOpenAI):
         # Monkey-patch the chat.completions object instance
         original_create = self.chat.completions.create
         
-        @trace_decorator(name="AzureOpenAI.chat.completions.create")
+        @observe(name="AzureOpenAI.chat.completions.create")
         def wrapped_create(*args, **kwargs):
             return original_create(*args, **kwargs)
             

@@ -6,7 +6,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from observix import AzureOpenAI, trace_decorator
+from observix import observe
+from observix.llm.openai import AzureOpenAI
 
 # Initialize automatically from .env
 # Env vars: AZURE_OPENAI_KEY, AZURE_API_BASE
@@ -51,13 +52,13 @@ def invoke_native(messages: list[BaseMessage]) -> AIMessage:
 
 # --- Tools (Dummy) ---
 
-@trace_decorator(name="google_search")
+@observe(name="google_search")
 def google_search(query: str):
     print(f"  [Tool] Searching Google for: {query}")
     time.sleep(0.5)
     return f"Search results for {query}: [Trend A, Trend B, Factor C]"
 
-@trace_decorator(name="cms_upload")
+@observe(name="cms_upload")
 def cms_upload(content: str):
     print("  [Tool] Uploading content to CMS...")
     time.sleep(0.5)
@@ -70,7 +71,7 @@ class AgentState(TypedDict):
     next: str
 
 # 1. Planner
-@trace_decorator(name="planner_agent")
+@observe(name="planner_agent")
 def planner_node(state: AgentState):
     print("\n--- Planner Agent ---")
     messages = state["messages"]
@@ -83,7 +84,7 @@ def planner_node(state: AgentState):
     return {"messages": [response]}
 
 # 2. Researcher
-@trace_decorator(name="researcher_agent")
+@observe(name="researcher_agent")
 def researcher_node(state: AgentState):
     print("\n--- Researcher Agent ---")
     last_message = state["messages"][-1]
@@ -99,7 +100,7 @@ def researcher_node(state: AgentState):
     return {"messages": [response]}
 
 # 3. Writer
-@trace_decorator(name="writer_agent")
+@observe(name="writer_agent")
 def writer_node(state: AgentState):
     print("\n--- Writer Agent ---")
     last_message = state["messages"][-1]
@@ -113,7 +114,7 @@ def writer_node(state: AgentState):
     return {"messages": [response], "next": "editor"}
 
 # 4. Editor
-@trace_decorator(name="editor_agent")
+@observe(name="editor_agent")
 def editor_node(state: AgentState):
     print("\n--- Editor Agent ---")
     last_message = state["messages"][-1]
@@ -125,7 +126,7 @@ def editor_node(state: AgentState):
     return {"messages": [response]}
 
 # 5. QC
-@trace_decorator(name="qc_agent")
+@observe(name="qc_agent")
 def qc_node(state: AgentState):
     print("\n--- QC Agent ---")
     last_message = state["messages"][-1]
@@ -174,7 +175,7 @@ workflow.add_conditional_edges("qc", qc_router, {
 
 app = workflow.compile()
 
-@trace_decorator(name="run_media_agency")
+@observe(name="run_media_agency")
 def run_agency():
     print("Starting Media Agency Workflow (Azure Native)...")
     final_state = app.invoke(

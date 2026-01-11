@@ -1,6 +1,6 @@
 import os
 import logging
-from observix.evaluation import ObsEval, EvaluationSuite
+from observix.evaluation import ObservixEval, EvaluationSuite
 from observix.schema import Trace, Observation
 from dotenv import load_dotenv
 
@@ -20,7 +20,7 @@ def main():
 
     # 1. Initialize ObsEval
     print("[*] Initializing ObsEval with Groq...")
-    obseval = ObsEval(client_type="groq", model="openai/gpt-oss-120b", api_key=groq_key)
+    obseval = ObservixEval(client_type="groq", model="openai/gpt-oss-120b", api_key=groq_key)
 
     # 2. Mock a Captured Trace
     # Emulate what comes from SQL/Schema

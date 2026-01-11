@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional
 
 from langchain_groq import ChatGroq as _ChatGroq
 
-from observix.instrumentation import trace_decorator
+from observix.instrumentation import observe
 
 
 class ChatGroq(_ChatGroq):
@@ -11,18 +11,18 @@ class ChatGroq(_ChatGroq):
     calls using obs_sdk.
     """
     
-    @trace_decorator(name="ChatGroq.invoke")
+    @observe(name="ChatGroq.invoke")
     def invoke(
         self,
         input: Any,
         config: Optional[Dict[str, Any]] = None,
         **kwargs: Any
     ) -> Any:
-        # The trace_decorator handles span creation, observation recording,
+        # The observe handles span creation, observation recording,
         # and error handling.
         return super().invoke(input, config=config, **kwargs)
 
-    @trace_decorator(name="ChatGroq.ainvoke")
+    @observe(name="ChatGroq.ainvoke")
     async def ainvoke(
         self,
         input: Any,

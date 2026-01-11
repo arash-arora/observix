@@ -1,5 +1,6 @@
-from typing import Any, List, Optional, Dict
 import json
+from typing import Any, List, Dict
+
 from observix.schema import Trace, Observation
 
 def trace_to_text(trace: Trace) -> str:

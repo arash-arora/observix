@@ -28,8 +28,8 @@ from .integrations.phoenix import (
 )
 
 # ObsEval Wrappers
-from .integrations.obseval import (
-    ObsEval,
+from .integrations.observix_eval import (
+    ObservixEval,
     ToolSelectionEvaluator,
     ToolInputStructureEvaluator,
     ToolSequenceEvaluator,

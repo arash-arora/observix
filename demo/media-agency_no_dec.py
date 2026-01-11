@@ -6,7 +6,8 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from obs_sdk import ChatGroq, trace_decorator
+from observix import observe
+from observix.llm.langchain import ChatGroq
 
 # Initialize automatically from .env
 # Ensure GROQ_API_KEY is in .env
@@ -19,13 +20,13 @@ llm = ChatGroq(model="openai/gpt-oss-120b")
 
 # --- Tools (Dummy) ---
 
-@trace_decorator(name="google_search")
+@observe(name="google_search")
 def google_search(query: str):
     print(f"  [Tool] Searching Google for: {query}")
     time.sleep(0.5)
     return f"Search results for {query}: [Trend A, Trend B, Factor C]"
 
-@trace_decorator(name="cms_upload")
+@observe(name="cms_upload")
 def cms_upload(content: str):
     print("  [Tool] Uploading content to CMS...")
     time.sleep(0.5)
@@ -140,7 +141,7 @@ workflow.add_conditional_edges("qc", qc_router, {
 
 app = workflow.compile()
 
-@trace_decorator(name="run_media_agency")
+@observe(name="run_media_agency")
 def run_agency():
     print("Starting Media Agency Workflow...")
     final_state = app.invoke(

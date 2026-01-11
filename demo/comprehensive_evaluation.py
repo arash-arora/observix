@@ -10,14 +10,11 @@ from observix.evaluation import (
     EvaluationSuite,
     RagasFaithfulnessEvaluator,
     RagasAnswerRelevancyEvaluator,
-    RagasContextPrecisionEvaluator,
-    RagasContextRecallEvaluator,
     DeepEvalAnswerRelevancyEvaluator,
-    DeepEvalFaithfulnessEvaluator,
-    DeepEvalContextualPrecisionEvaluator,
     DeepEvalHallucinationEvaluator,
-    PhoenixAgentFunctionCalling,
-    ObsEval
+    ObservixEval, 
+    PhoenixHallucinationEvaluator, 
+    PhoenixQAEvaluator
 )
 from observix import init_observability, record_score
 
@@ -194,7 +191,7 @@ def main():
                  except: pass
                  
             # Init ObsEval
-            obseval = ObsEval(client_type="groq", model="openai/gpt-oss-120b", api_key=groq_key)
+            obseval = ObservixEval(client_type="groq", model="openai/gpt-oss-120b", api_key=groq_key)
             
         else:
             mocking = True

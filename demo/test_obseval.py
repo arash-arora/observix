@@ -1,7 +1,7 @@
 import os
 import logging
 from dotenv import load_dotenv
-from observix.evaluation import ObsEval, EvaluationSuite
+from observix.evaluation import ObservixEval, EvaluationSuite
 
 # Load env vars
 load_dotenv()
@@ -19,7 +19,7 @@ def main():
 
     # 1. Initialize ObsEval with Groq
     print("[*] Initializing ObsEval with Groq (openai/gpt-oss-120b)...")
-    obseval = ObsEval(
+    obseval = ObservixEval(
         client_type="groq",
         model="openai/gpt-oss-120b",
         api_key=groq_key
