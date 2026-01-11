@@ -1,29 +1,30 @@
-import asyncio
-import functools
-import inspect
-import json
 import os
-import random
 import time
-from contextvars import ContextVar
+import json
+import random
+import inspect
+import asyncio
+import datetime as dt
+import functools
 from datetime import datetime
+from dotenv import load_dotenv
+from contextvars import ContextVar
 from typing import Any, Callable, Dict, Optional
 
-from dotenv import load_dotenv
 from opentelemetry import trace
 from opentelemetry.context import get_current
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
+from observix.schema import Observation
 import observix.exporter as exporter_module
 from observix.exporter import HttpObservationExporter, HttpTraceExporter
-from observix.schema import Observation
 
 # Load env variables from .env file if present
 load_dotenv()
 
-_TRACER_NAME = "obs-sdk"
+_TRACER_NAME = "observix"
 
 # ContextVar to track the current observation ID for parent-child relationship
 _current_observation_id: ContextVar[Optional[int]] = ContextVar(
@@ -38,18 +39,18 @@ def init_observability(
     """
     Initialize the observability SDK.
     Configuration can be provided via arguments or environment variables:
-    - OBS_HOST or OBS_URL (e.g., http://localhost:8000)
-    - OBS_API_KEY
+    - OBSERVIX_HOST or OBSERVIX_URL (e.g., http://localhost:8000)
+    - OBSERVIX_API_KEY
     """
-    url = url or os.getenv("OBS_HOST") or os.getenv("OBS_URL")
-    api_key = api_key or os.getenv("OBS_API_KEY")
+    url = url or os.getenv("OBSERVIX_HOST") or os.getenv("OBSERVIX_URL")
+    api_key = api_key or os.getenv("OBSERVIX_API_KEY")
 
     if not url:
-        print("[ObsSDK] Warning: OBS_HOST not found. Observability disabled.")
+        print("[OBSERVIX] Warning: OBSERVIX_HOST not found. Observability disabled.")
         return
         
     if not api_key:
-        print("[ObsSDK] Warning: OBS_API_KEY not found. Observability disabled.")
+        print("[OBSERVIX] Warning: OBSERVIX_API_KEY not found. Observability disabled.")
         return
 
     # --- initialize provider only once ---
@@ -71,15 +72,15 @@ def init_observability(
         url, api_key
     )
     
-    print(f"[ObsSDK] Initialized with Host: {url}")
+    print(f"[OBSERVIX] Initialized with Host: {url}")
 
 
 # Try to auto-initialize if configured
-if (os.getenv("OBS_HOST") or os.getenv("OBS_URL")) and os.getenv("OBS_API_KEY"):
+if (os.getenv("OBSERVIX_HOST") or os.getenv("OBSERVIX_URL")) and os.getenv("OBSERVIX_API_KEY"):
     try:
         init_observability()
     except Exception as e:
-        print(f"[ObsSDK] Auto-initialization failed: {e}")
+        print(f"[OBSERVIX] Auto-initialization failed: {e}")
 
 
 def _extract_token_usage(result: Any) -> Optional[Dict[str, int]]:
@@ -219,7 +220,7 @@ def trace_decorator(
                         metadata_json=json.dumps(span.attributes, default=str),
                         observation_type="decorator",
                         trace_id=f"{span.get_span_context().trace_id:032x}",
-                        created_at=datetime.utcnow(),
+                        created_at=datetime.now(dt.timezone.utc),
                     )
                     
                     # Careful with JSON dumping arbitrary objects
@@ -309,14 +310,6 @@ def trace_decorator(
                             "duration_ms", (time.time() - start_time) * 1000
                         )
                         _current_observation_id.reset(token)
-
-        # For async functions, we want to return the async wrapper directly
-        # BUT our inner function here is sync because it sets up text context?
-        # Actually for async functions, the decorator returns a sync wrapper that
-        # returns a coroutine OR it returns an async wrapper.
-        # My implementation above `inner` is sync, and it calls `asyncio.run`
-        # if the wrapped function is async. This blocks!
-        # This is WRONG for async functions. Async functions should return a coroutine.
         
         if inspect.iscoroutinefunction(func):
             @functools.wraps(func)
@@ -404,7 +397,7 @@ def trace_decorator(
                             exporter.enqueue(obs)
                         except Exception as obs_exc:
                             print(
-                                f"[ObsWarning] Failed to create observation: {obs_exc}"
+                                f"[ObservixWarning] Failed to create observation: {obs_exc}"
                             )
 
                     try:
@@ -491,4 +484,4 @@ def record_score(
     try:
         exporter.enqueue(obs)
     except Exception as e:
-        print(f"[ObsWarning] Failed to record score: {e}")
+        print(f"[ObservixWarning] Failed to record score: {e}")
