@@ -163,7 +163,7 @@ def _extract_model_name(kwargs: Dict, result: Any) -> Optional[str]:
         
     return None
 
-def trace_decorator(
+def observe(
     name: Optional[str] = None,
     attributes: Optional[Dict[str, Any]] = None,
     record_observation: bool = True,

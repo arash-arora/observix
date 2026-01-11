@@ -1,7 +1,7 @@
 from typing import Any
 
-from openai import AzureOpenAI as _AzureOpenAI
-from openai import OpenAI as _OpenAI
+from observix.langchain.chat_openai import AzureOpenAI as _AzureOpenAI
+from observix.langchain.chat_openai import OpenAI as _OpenAI
 from openai.resources.chat.completions import Completions
 
 from observix.instrumentation import trace_decorator
