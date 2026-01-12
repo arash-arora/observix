@@ -6,7 +6,8 @@ from .integrations.ragas import (
     RagasFaithfulnessEvaluator,
     RagasAnswerRelevancyEvaluator,
     RagasContextPrecisionEvaluator,
-    RagasContextRecallEvaluator
+    RagasContextRecallEvaluator, 
+    RagasNoiseSensitivityEvaluator
 )
 
 # DeepEval Wrappers
@@ -48,6 +49,7 @@ __all__ = [
     "RagasAnswerRelevancyEvaluator",
     "RagasContextPrecisionEvaluator",
     "RagasContextRecallEvaluator",
+    "RagasNoiseSensitivityEvaluator",
     "DeepEvalMetricEvaluator",
     "DeepEvalAnswerRelevancyEvaluator",
     "DeepEvalFaithfulnessEvaluator",

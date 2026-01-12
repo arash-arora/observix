@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Optional, List
+from typing import Optional, List, Any
 from dotenv import load_dotenv
 
 # Load env vars
@@ -33,6 +33,7 @@ except ImportError:
 class ObservixEvalLLM:
     """
     Wrapper for LLM clients (OpenAI, Azure, Groq) to unify generation.
+    Can also wrap LangChain Runnable or raw OpenAI-compatible client.
     """
     def __init__(
         self,
@@ -43,49 +44,71 @@ class ObservixEvalLLM:
         azure_endpoint: Optional[str] = None,
         azure_deployment: Optional[str] = None,
         api_version: Optional[str] = None,
+        client_instance: Optional[Any] = None
     ):
-        if not OPENAI_AVAILABLE:
-            raise ImportError("openai package is required. Install with `pip install openai`.")
-
         self.model = model
         self.client_type = client_type.lower()
-        
-        if self.client_type == "groq":
-             # Groq is OpenAI compatible
-             self.client = OpenAI(
-                 base_url=base_url or "https://api.groq.com/openai/v1",
-                 api_key=api_key or os.getenv("GROQ_API_KEY")
-             )
-             # Groq models -> openai/gpt-oss-120b or llama-3.3-70b-versatile usually
-             if not self.model: 
-                 self.model = "llama-3.3-70b-versatile"
-                 
-        elif self.client_type == "azure":
-            self.client = AzureOpenAI(
-                api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY"),
-                api_version=api_version or "2024-02-01",
-                azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"),
-                deployment_name=azure_deployment or model
-            )
-            # Azure uses deployment name as model
-            
-        else: # openai
-            self.client = OpenAI(
-                api_key=api_key or os.getenv("OPENAI_API_KEY"),
-                base_url=base_url
-            )
+        self.client_instance = client_instance
+        self.is_langchain = False
+
+        if self.client_instance:
+            # If client is provided, detect type
+            if hasattr(self.client_instance, "invoke"):
+                self.is_langchain = True
+            elif hasattr(self.client_instance, "chat"):
+                # OpenAI compatible client
+                self.client = self.client_instance
+            else:
+                 # Assume generic client or maybe user passed something else
+                 self.client = self.client_instance
+        else:
+             # Create client as before
+            if not OPENAI_AVAILABLE:
+                raise ImportError("openai package is required. Install with `pip install openai`.")
+
+            if self.client_type == "groq":
+                 # Groq is OpenAI compatible
+                 self.client = OpenAI(
+                     base_url=base_url or "https://api.groq.com/openai/v1",
+                     api_key=api_key or os.getenv("GROQ_API_KEY")
+                 )
+                 if not self.model: 
+                     self.model = "llama-3.3-70b-versatile"
+                     
+            elif self.client_type == "azure":
+                self.client = AzureOpenAI(
+                    api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY"),
+                    api_version=api_version or "2024-02-01",
+                    azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"),
+                    deployment_name=azure_deployment or model
+                )
+                
+            else: # openai
+                self.client = OpenAI(
+                    api_key=api_key or os.getenv("OPENAI_API_KEY"),
+                    base_url=base_url
+                )
 
     def generate(self, prompt: str) -> str:
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful AI assistant for evaluation."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.0
-            )
-            return response.choices[0].message.content
+            if self.is_langchain:
+                # LangChain usage
+                response = self.client_instance.invoke(prompt)
+                # Response might be a string or AIMessage
+                if hasattr(response, "content"):
+                    return response.content
+                return str(response)
+            else:
+                # OpenAI usage
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "You are a helpful AI assistant for evaluation."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.0
+                )
+                return response.choices[0].message.content
         except Exception as e:
             logger.error(f"LLM Generation failed: {e}")
             raise e
@@ -94,10 +117,16 @@ class ObservixEvalEvaluator(Evaluator):
     """
     Base class for ObsEval metrics using LLM.
     """
-    def __init__(self, metric_name: str, prompt_template: str, llm: ObservixEvalLLM):
+    def __init__(self, metric_name: str, prompt_template: str, llm: Any):
         self._name = metric_name
         self.prompt_template = prompt_template
-        self.llm = llm
+        
+        # Ensure llm is ObservixEvalLLM
+        if isinstance(llm, ObservixEvalLLM):
+            self.llm = llm
+        else:
+            # Wrap raw client
+            self.llm = ObservixEvalLLM(client_instance=llm, model="gpt-4o") # default model if not known
 
     @property
     def name(self) -> str:
@@ -207,31 +236,31 @@ class ObservixEvalEvaluator(Evaluator):
 
 # Specific Evaluators
 class ToolSelectionEvaluator(ObservixEvalEvaluator):
-    def __init__(self, llm: ObservixEvalLLM):
+    def __init__(self, llm: Any):
         super().__init__("tool_selection", TOOL_SELECTION_PROMPT_TEMPLATE, llm)
 
 class ToolInputStructureEvaluator(ObservixEvalEvaluator):
-    def __init__(self, llm: ObservixEvalLLM):
+    def __init__(self, llm: Any):
         super().__init__("tool_input_structure", TOOL_INPUT_STRUCTURE_PROMPT_TEMPLATE, llm)
 
 class ToolSequenceEvaluator(ObservixEvalEvaluator):
-    def __init__(self, llm: ObservixEvalLLM):
+    def __init__(self, llm: Any):
         super().__init__("tool_sequence", TOOL_SEQUENCE_PROMPT_TEMPLATE, llm)
 
 class AgentRoutingEvaluator(ObservixEvalEvaluator):
-    def __init__(self, llm: ObservixEvalLLM):
+    def __init__(self, llm: Any):
         super().__init__("agent_routing", AGENT_ROUTING_PROMPT_TEMPLATE, llm)
 
 class HITLEvaluator(ObservixEvalEvaluator):
-    def __init__(self, llm: ObservixEvalLLM):
+    def __init__(self, llm: Any):
         super().__init__("hitl_evaluation", HITL_PROMPT_TEMPLATE, llm)
 
 class WorkflowCompletionEvaluator(ObservixEvalEvaluator):
-    def __init__(self, llm: ObservixEvalLLM):
+    def __init__(self, llm: Any):
         super().__init__("workflow_completion", WORKFLOW_COMPLETION_PROMPT_TEMPLATE, llm)
 
 class CustomMetricEvaluator(ObservixEvalEvaluator):
-    def __init__(self, llm: ObservixEvalLLM):
+    def __init__(self, llm: Any):
         super().__init__("custom_metric", CUSTOM_METRIC_PROMPT_TEMPLATE, llm)
 
 # Unified Facade (Optional)

@@ -6,12 +6,32 @@ from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.schema import Trace
 from observix.evaluation.trace_utils import extract_eval_params
 
+import os
+
 logger = logging.getLogger(__name__)
+
+def _set_env_from_kwargs(kwargs):
+    if kwargs.get("api_key"):
+        # Phoenix OpenAIModel uses OPENAI_API_KEY
+        os.environ["OPENAI_API_KEY"] = kwargs["api_key"]
+        # If user provides Azure keys, mapped similarly
+        if kwargs.get("azure_endpoint"):
+             os.environ["AZURE_API_BASE"] = kwargs["azure_endpoint"]
+             os.environ["AZURE_OPENAI_API_KEY"] = kwargs["api_key"] # Phoenix uses this or OPENAI_API_KEY depending on config
+             # We might need to map specific Phoenix Azure env vars if different
+             # But generic OpenAIModel works with OPENAI_API_KEY
+    
+    # Also handle AZURE specific if passed explicitly
+    if kwargs.get("api_version"):
+        os.environ["AZURE_API_VERSION"] = kwargs["api_version"]
+    if kwargs.get("deployment_name"):
+        os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = kwargs["deployment_name"]
 
 try:
     from phoenix.evals import (
         llm_classify, 
         OpenAIModel,
+        LangChainModel,
         HALLUCINATION_PROMPT_TEMPLATE,
         HALLUCINATION_PROMPT_RAILS_MAP,
         QA_PROMPT_TEMPLATE,
@@ -25,12 +45,45 @@ try:
 except ImportError:
     PHOENIX_AVAILABLE = False
     OpenAIModel = object # Mock for type hint if needed
+    LangChainModel = object
+
+def _wrap_llm_for_phoenix(llm: Any, default_model_name: str = "gpt-4") -> Any:
+    """
+    Wraps an LLM object (LangChain Runnable or OpenAI Client) into a Phoenix Model.
+    """
+    if not PHOENIX_AVAILABLE:
+        return None
+
+    # Check for LangChain Runnable (has invoke/batch)
+    if hasattr(llm, "invoke") or hasattr(llm, "batch"):
+        return LangChainModel(model=llm)
+
+    # Check for OpenAI Client (has chat.completions)
+    # Phoenix OpenAIModel typically creates its own client, but we can try to use it 
+    # if we can configure it. However, standard OpenAIModel takes model name.
+    # If we have a raw client, it's hard to inject into OpenAIModel directly without
+    # using a custom adapter or relying on env vars the client also used.
+    # But often users just want to control the model name.
+    # If the user passed a client, we might need to assume environment is set or 
+    # use a generic wrapper.
+    # Ideally we'd use the client properties. 
+    # For now, if it looks like an OpenAI client, we might try to just Create OpenAIModel 
+    # with specific settings if possible, otherwise we fallback to default OpenAIModel usage
+    # but that ignores the passed client instance.
+    # A better approach for raw client might be to just not wrap it if Phoenix doesn't support it 
+    # and rely on global config, BUT user explicitly passed it.
+    
+    # As a fallback for raw clients, we can try to assume it's OpenAI-compatible 
+    # and if Phoenix supports passing client (some versions do), use it. 
+    # If not, we fall back to creating OpenAIModel which uses env vars.
+    return OpenAIModel(model=default_model_name)
+
 
 class PhoenixMetricEvaluator(Evaluator):
     """
     Evaluator using Arize Phoenix (arize-phoenix-evals) metrics.
     """
-    def __init__(self, model: Any, template: str, rails_map: Dict[str, Any], name: str, input_column_map: Dict[str, str]):
+    def __init__(self, model: Any, template: str, rails_map: Dict[str, Any], name: str, input_column_map: Dict[str, str], llm: Optional[Any] = None, **kwargs):
         """
         Args:
             model: The Phoenix Model wrapper (e.g. OpenAIModel)
@@ -38,13 +91,18 @@ class PhoenixMetricEvaluator(Evaluator):
             rails_map: The rails map for parsing output
             name: The metric name
             input_column_map: Mapping from standard args (input_query, output, expected, context) to dataframe columns expected by template.
-                              Key: standard arg name, Value: dataframe column name
+                               Key: standard arg name, Value: dataframe column name
+            llm: Optional underlying LLM object to wrap if model is not provided.
         """
         if not PHOENIX_AVAILABLE:
             raise ImportError(
                 "arize-phoenix-evals is not installed. Please install it with "
                 "`pip install arize-phoenix-evals` or `uv sync --extra eval`."
             )
+            
+        if llm and model is None:
+            model = _wrap_llm_for_phoenix(llm)
+
         self.model = model
         self.template = template
         self.rails_map = rails_map
@@ -129,10 +187,13 @@ class PhoenixMetricEvaluator(Evaluator):
             raise e
 
 class PhoenixHallucinationEvaluator(PhoenixMetricEvaluator):
-    def __init__(self, model=None):
-        if model is None:
+    def __init__(self, model=None, llm: Optional[Any] = None, **kwargs):
+        _set_env_from_kwargs(kwargs)
+        if model is None and llm is None:
              from phoenix.evals import OpenAIModel
              model = OpenAIModel(model="gpt-4")
+        
+        # If llm is provided, PhoenixMetricEvaluator will handle wrapping if model is None
              
         super().__init__(
             model=model,
@@ -143,7 +204,9 @@ class PhoenixHallucinationEvaluator(PhoenixMetricEvaluator):
                 "output": "output",
                 "input_query": "input", 
                 "context": "context"
-            }
+            },
+            llm=llm,
+            **kwargs
         )
         self.input_column_map = {
              "input_query": "input",
@@ -152,8 +215,9 @@ class PhoenixHallucinationEvaluator(PhoenixMetricEvaluator):
         }
 
 class PhoenixQAEvaluator(PhoenixMetricEvaluator):
-    def __init__(self, model=None):
-        if model is None:
+    def __init__(self, model=None, llm: Optional[Any] = None, **kwargs):
+        _set_env_from_kwargs(kwargs)
+        if model is None and llm is None:
              from phoenix.evals import OpenAIModel
              model = OpenAIModel(model="gpt-4")
         super().__init__(
@@ -165,12 +229,15 @@ class PhoenixQAEvaluator(PhoenixMetricEvaluator):
                  "input_query": "input",
                  "output": "output",
                  "expected": "reference"
-            }
+            },
+            llm=llm,
+            **kwargs
         )
 
 class PhoenixRAGRelevancyEvaluator(PhoenixMetricEvaluator):
-    def __init__(self, model=None):
-        if model is None:
+    def __init__(self, model=None, llm: Optional[Any] = None, **kwargs):
+        _set_env_from_kwargs(kwargs)
+        if model is None and llm is None:
              from phoenix.evals import OpenAIModel
              model = OpenAIModel(model="gpt-4")
         super().__init__(
@@ -180,23 +247,20 @@ class PhoenixRAGRelevancyEvaluator(PhoenixMetricEvaluator):
             name="phoenix_rag_relevancy",
              input_column_map={
                  "input_query": "input",
-                 "expected": "reference" # Relevancy often checks query vs reference (document)?
-                 # Actually RAG Relevancy usually checks Query vs Retrieved Document (Context)
-                 # Or Query vs Answer?
-                 # Example in search result used: query_text -> input, document_text -> reference
-            }
+                 "expected": "reference"
+            },
+            llm=llm,
+            **kwargs
         )
-        # Adjust map for typical use case: Context Precision/Recall equivalent?
-        # If it checks if REFERENCE (doc) is relevant to INPUT (query).
-        # Then we should map 'context' to 'reference'.
         self.input_column_map = {
             "input_query": "input",
             "context": "reference" 
         }
 
 class PhoenixAgentFunctionCalling(PhoenixMetricEvaluator):
-    def __init__(self, model=None):
-        if model is None:
+    def __init__(self, model=None, llm: Optional[Any] = None, **kwargs):
+        _set_env_from_kwargs(kwargs)
+        if model is None and llm is None:
              from phoenix.evals import OpenAIModel
              model = OpenAIModel(model="gpt-4")
         super().__init__(
@@ -207,11 +271,10 @@ class PhoenixAgentFunctionCalling(PhoenixMetricEvaluator):
              input_column_map={
                  "input_query": "input",
                  "expected": "reference" 
-            }
+            },
+            llm=llm,
+            **kwargs
         )
-        # Adjust map for typical use case: Context Precision/Recall equivalent?
-        # If it checks if REFERENCE (doc) is relevant to INPUT (query).
-        # Then we should map 'context' to 'reference'.
         self.input_column_map = {
             "input_query": "question",
             "output": "tool_call",

@@ -8,6 +8,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from observix.schema import Observation
+from observix.context import current_api_key, current_host
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +79,21 @@ class HttpTraceExporter(SpanExporter):
             }
             payload.append(span_dict)
 
+        # Prefer context vars if set (request-scoped)
+        api_key = current_api_key.get() or self.api_key or ""
+        host = current_host.get() or self.url
+        host = host.rstrip("/")
+
         headers = {
             "Content-Type": "application/json",
-            "X-API-Key": self.api_key or ""
+            "X-API-Key": api_key
         }
 
         try:
             # Sync HTTP request because SpanExporter.export is blocking
             with httpx.Client(timeout=10.0) as client:
                 response = client.post(
-                    f"{self.url}/api/v1/ingest/traces", 
+                    f"{host}/api/v1/ingest/traces", 
                     json=payload, 
                     headers=headers
                 )
@@ -150,15 +156,20 @@ class HttpObservationExporter:
             # project_id is handled by backend via API Key
         }
 
+        # Prefer context vars if set (request-scoped)
+        api_key = current_api_key.get() or self.api_key or ""
+        host = current_host.get() or self.url
+        host = host.rstrip("/")
+
         headers = {
             "Content-Type": "application/json",
-            "X-API-Key": self.api_key or ""
+            "X-API-Key": api_key
         }
 
         try:
             with httpx.Client(timeout=10.0) as client:
                 response = client.post(
-                    f"{self.url}/api/v1/ingest/observations",
+                    f"{host}/api/v1/ingest/observations",
                     json=[obs_dict], # API expects list
                     headers=headers
                 )
