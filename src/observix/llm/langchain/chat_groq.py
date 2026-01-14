@@ -4,13 +4,11 @@ from langchain_groq import ChatGroq as _ChatGroq
 
 from observix.instrumentation import observe
 
-
 class ChatGroq(_ChatGroq):
     """
     Wrapper around langchain_groq.ChatGroq that automatically traces
-    calls using obs_sdk.
-    """
-    
+    calls using observix.
+    """  
     @observe(name="ChatGroq.invoke")
     def invoke(
         self,

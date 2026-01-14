@@ -26,6 +26,9 @@ load_dotenv()
 
 _TRACER_NAME = "observix"
 
+# Track if observability has been initialized to prevent duplicate processors
+_observability_initialized = False
+
 # ContextVar to track the current observation ID for parent-child relationship
 _current_observation_id: ContextVar[Optional[int]] = ContextVar(
     "current_observation_id", default=None
@@ -41,7 +44,11 @@ def init_observability(
     Configuration can be provided via arguments or environment variables:
     - OBSERVIX_HOST or OBSERVIX_URL (e.g., http://localhost:8000)
     - OBSERVIX_API_KEY
+    
+    This function is idempotent - calling it multiple times will not add duplicate processors.
     """
+    global _observability_initialized
+    
     url = url or os.getenv("OBSERVIX_HOST") or os.getenv("OBSERVIX_URL")
     api_key = api_key or os.getenv("OBSERVIX_API_KEY")
 
@@ -51,6 +58,11 @@ def init_observability(
         
     if not api_key:
         print("[OBSERVIX] Warning: OBSERVIX_API_KEY not found. Observability disabled.")
+        return
+    
+    # Prevent duplicate initialization
+    if _observability_initialized:
+        print("[OBSERVIX] Already initialized. Skipping duplicate initialization.")
         return
 
     # --- initialize provider only once ---
@@ -72,6 +84,7 @@ def init_observability(
         url, api_key
     )
     
+    _observability_initialized = True
     print(f"[OBSERVIX] Initialized with Host: {url}")
 
 
@@ -485,3 +498,28 @@ def record_score(
         exporter.enqueue(obs)
     except Exception as e:
         print(f"[ObservixWarning] Failed to record score: {e}")
+
+
+def capture_context(context: Any):
+    """
+    Explicitly capture retrieval context or other context data for the current span.
+    This is useful for accurate RAG evaluations (e.g. context_precision, recall).
+    
+    Args:
+        context: The context data (list of strings, string, or JSON-serializable object).
+    """
+    span = trace.get_current_span()
+    if not span.get_span_context().is_valid:
+        return
+
+    try:
+        if isinstance(context, (str, list, dict)):
+            # Store directly if simple type, else json dump
+            if isinstance(context, str):
+                 span.set_attribute("context", context)
+            else:
+                 span.set_attribute("context", json.dumps(context, default=str))
+        else:
+            span.set_attribute("context", str(context))
+    except Exception as e:
+         print(f"[ObservixWarning] Failed to capture context: {e}")

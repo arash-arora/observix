@@ -212,11 +212,19 @@ class ObservixEvalEvaluator(Evaluator):
             score = self._parse_score(response)
             passed = score >= 0.5 # Threshold?
             
+            # Extract Trace ID
+            from opentelemetry import trace as otel_trace
+            current_span = otel_trace.get_current_span()
+            trace_id_hex = None
+            if current_span.get_span_context().is_valid:
+                trace_id_hex = f"{current_span.get_span_context().trace_id:032x}"
+
             return EvaluationResult(
                 metric_name=self.name,
                 score=score,
                 passed=passed,
-                reason=response # Return full explanation
+                reason=response,
+                metadata={"trace_id": trace_id_hex} if trace_id_hex else {}
             )
             
         except KeyError as e:

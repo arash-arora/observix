@@ -1,14 +1,15 @@
+import os
 import inspect
 import logging
-import os
+from fastapi import HTTPException
+from ragas.llms import llm_factory
 from typing import List, Optional, Any
 
-from fastapi import HTTPException
+from observix import observe
 from observix.schema import Trace
 from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.evaluation.trace_utils import extract_eval_params
 
-from ragas.llms import llm_factory
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +61,10 @@ class RagasMetricEvaluator(Evaluator):
             os.environ["AZURE_API_VERSION"] = kwargs["api_version"]
         if kwargs.get("deployment_name"):
             os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = kwargs["deployment_name"]
-
-        self.llm = self._get_llm()
-
+        
         # Ragas metrics expect llm to be attached
+
+        self.llm = self._get_llm(metric.__name__)
         self.metric = metric(self.llm)
         self.metric.llm = self.llm
 
@@ -71,14 +72,14 @@ class RagasMetricEvaluator(Evaluator):
     def name(self) -> str:
         return self.metric.name
 
-    def _get_llm(self):
+    def _get_llm(self, metric_name: str):
         if self.provider == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise HTTPException(400, "OPENAI_API_KEY is required")
 
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=api_key)
+            from observix.llm.openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=api_key, instrument=False)
             return llm_factory("openai/gpt-oss-120b", client=client)
 
         elif self.provider == "azure":
@@ -94,11 +95,12 @@ class RagasMetricEvaluator(Evaluator):
                     "AZURE_OPENAI_KEY, AZURE_OPENAI_DEPLOYMENT_NAME",
                 )
 
-            from openai import AsyncAzureOpenAI
+            from observix.llm.openai import AsyncAzureOpenAI
             client = AsyncAzureOpenAI(
                 api_key=api_key,
                 api_version=api_version,
                 azure_endpoint=api_base,
+                instrument=False,
             )
             return llm_factory(deployment, client=client)
 
@@ -107,16 +109,18 @@ class RagasMetricEvaluator(Evaluator):
             if not api_key:
                 raise HTTPException(400, "GROQ_API_KEY is required")
 
-            from openai import AsyncOpenAI
+            from observix.llm.openai import AsyncOpenAI
             client = AsyncOpenAI(
                 api_key=api_key,
                 base_url="https://api.groq.com/openai/v1",
+                instrument=False,
             )
             return llm_factory(self.model or "openai/gpt-oss-120b", client=client)
 
         else:
             raise HTTPException(400, f"Unsupported provider: {self.provider}")
 
+    @observe("RAGAS Evaluation")
     async def evaluate(
         self,
         output: str = "",
@@ -150,11 +154,22 @@ class RagasMetricEvaluator(Evaluator):
                 **kwargs
             )
 
+            # Extract Trace ID
+            from opentelemetry import trace as otel_trace
+            current_span = otel_trace.get_current_span()
+            trace_id_hex = None
+            if current_span.get_span_context().is_valid:
+                trace_id_hex = f"{current_span.get_span_context().trace_id:032x}"
+            
+            metadata = {"ragas_metric": self.metric.name}
+            if trace_id_hex:
+                 metadata["trace_id"] = trace_id_hex
+
             return EvaluationResult(
                 metric_name=self.metric.name,
                 score=float(score),
                 passed=True,
-                metadata={"ragas_metric": self.metric.name},
+                metadata=metadata,
             )
 
         except Exception as e:

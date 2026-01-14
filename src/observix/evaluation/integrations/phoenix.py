@@ -5,6 +5,7 @@ from typing import List, Optional, Any, Dict
 from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.schema import Trace
 from observix.evaluation.trace_utils import extract_eval_params
+from observix import observe
 
 import os
 
@@ -39,13 +40,66 @@ try:
         RAG_RELEVANCY_PROMPT_TEMPLATE,
         RAG_RELEVANCY_PROMPT_RAILS_MAP,
         TOOL_CALLING_PROMPT_RAILS_MAP,
-        TOOL_CALLING_PROMPT_TEMPLATE
+        TOOL_CALLING_PROMPT_TEMPLATE,
+        TOXICITY_PROMPT_TEMPLATE,
+        TOXICITY_PROMPT_RAILS_MAP
     )
     PHOENIX_AVAILABLE = True
 except ImportError:
     PHOENIX_AVAILABLE = False
     OpenAIModel = object # Mock for type hint if needed
     LangChainModel = object
+
+class PhoenixCustomModel:
+    """
+    Wrapper for Phoenix Models to handle dynamic configuration like DeepEval/Ragas custom models.
+    """
+    def __init__(
+        self,
+        provider: str,
+        model_name: str = "gpt-4",
+        **kwargs,
+    ):
+        self.provider = provider
+        self.model_name = model_name
+        self.kwargs = kwargs
+        self._phoenix_model = self._get_model()
+
+    def _get_model(self):
+        if not PHOENIX_AVAILABLE:
+            return None
+
+        _set_env_from_kwargs(self.kwargs)
+
+        if self.provider == "openai":
+            # Direct OpenAI Model
+            return OpenAIModel(model=self.model_name)
+        
+        elif self.provider == "azure":
+            # For Azure, we rely on env vars set by _set_env_from_kwargs
+            # Phoenix OpenAIModel picks them up automatically if standard variables are used
+            return OpenAIModel(model=self.model_name)
+            
+        elif self.provider == "langchain":
+            # If leveraging langchain provider, we might have a Runnable passed in 'llm' arg usually,
+            # but if we are just configuring by name/key, we might need to construct a LangChain object trace.
+            # However, for simplicity here matching DeepEval logic:
+            from langchain_groq import ChatGroq
+            # construct minimal langchain object
+            llm = ChatGroq(
+                model=self.model_name or "llama3-8b-8192",
+                api_key=self.kwargs.get("api_key"),
+                temperature=0.0
+            )
+            return LangChainModel(model=llm)
+            
+        else:
+            # Fallback
+            return OpenAIModel(model=self.model_name)
+
+    @property
+    def model(self):
+        return self._phoenix_model
 
 def _wrap_llm_for_phoenix(llm: Any, default_model_name: str = "gpt-4") -> Any:
     """
@@ -58,24 +112,7 @@ def _wrap_llm_for_phoenix(llm: Any, default_model_name: str = "gpt-4") -> Any:
     if hasattr(llm, "invoke") or hasattr(llm, "batch"):
         return LangChainModel(model=llm)
 
-    # Check for OpenAI Client (has chat.completions)
-    # Phoenix OpenAIModel typically creates its own client, but we can try to use it 
-    # if we can configure it. However, standard OpenAIModel takes model name.
-    # If we have a raw client, it's hard to inject into OpenAIModel directly without
-    # using a custom adapter or relying on env vars the client also used.
-    # But often users just want to control the model name.
-    # If the user passed a client, we might need to assume environment is set or 
-    # use a generic wrapper.
-    # Ideally we'd use the client properties. 
-    # For now, if it looks like an OpenAI client, we might try to just Create OpenAIModel 
-    # with specific settings if possible, otherwise we fallback to default OpenAIModel usage
-    # but that ignores the passed client instance.
-    # A better approach for raw client might be to just not wrap it if Phoenix doesn't support it 
-    # and rely on global config, BUT user explicitly passed it.
-    
-    # As a fallback for raw clients, we can try to assume it's OpenAI-compatible 
-    # and if Phoenix supports passing client (some versions do), use it. 
-    # If not, we fall back to creating OpenAIModel which uses env vars.
+    # Fallback to OpenAIModel
     return OpenAIModel(model=default_model_name)
 
 
@@ -83,27 +120,36 @@ class PhoenixMetricEvaluator(Evaluator):
     """
     Evaluator using Arize Phoenix (arize-phoenix-evals) metrics.
     """
-    def __init__(self, model: Any, template: str, rails_map: Dict[str, Any], name: str, input_column_map: Dict[str, str], llm: Optional[Any] = None, **kwargs):
-        """
-        Args:
-            model: The Phoenix Model wrapper (e.g. OpenAIModel)
-            template: The prompt template string
-            rails_map: The rails map for parsing output
-            name: The metric name
-            input_column_map: Mapping from standard args (input_query, output, expected, context) to dataframe columns expected by template.
-                               Key: standard arg name, Value: dataframe column name
-            llm: Optional underlying LLM object to wrap if model is not provided.
-        """
+    def __init__(
+        self, 
+        template: str, 
+        rails_map: Dict[str, Any], 
+        name: str, 
+        input_column_map: Dict[str, str], 
+        model: Optional[Any] = None, # direct phoenix model (legacy)
+        llm: Optional[Any] = None, # direct llm object (legacy)
+        provider: Optional[str] = None, # new standard
+        model_name: Optional[str] = None, # new standard
+        **kwargs
+    ):
         if not PHOENIX_AVAILABLE:
             raise ImportError(
                 "arize-phoenix-evals is not installed. Please install it with "
                 "`pip install arize-phoenix-evals` or `uv sync --extra eval`."
             )
             
-        if llm and model is None:
-            model = _wrap_llm_for_phoenix(llm)
+        # Priority 1: Use provided Phoenix Model or LLM object
+        if model:
+            self.model = model
+        elif llm:
+            self.model = _wrap_llm_for_phoenix(llm)
+        else:
+            # Priority 2: Use Provider/Model Config
+            provider = provider or "openai"
+            model_name = model_name or "gpt-4"
+            self.custom_model = PhoenixCustomModel(provider=provider, model_name=model_name, **kwargs)
+            self.model = self.custom_model.model
 
-        self.model = model
         self.template = template
         self.rails_map = rails_map
         self._name = name
@@ -113,6 +159,7 @@ class PhoenixMetricEvaluator(Evaluator):
     def name(self) -> str:
         return self._name
 
+    @observe
     def evaluate(
         self,
         output: str = "",
@@ -148,7 +195,6 @@ class PhoenixMetricEvaluator(Evaluator):
         df = pd.DataFrame([data])
         
         try:
-            
             rails = list(self.rails_map.values())
             
             result_df = llm_classify(
@@ -175,11 +221,20 @@ class PhoenixMetricEvaluator(Evaluator):
                 score = 0.0 
                 passed = False 
                 
+            # Extract Trace ID from current context if available
+            from opentelemetry import trace as otel_trace
+            current_span = otel_trace.get_current_span()
+            trace_id_hex = None
+            
+            if current_span.get_span_context().is_valid:
+                trace_id_hex = f"{current_span.get_span_context().trace_id:032x}"
+
             return EvaluationResult(
                 metric_name=self.name,
                 score=score,
                 passed=passed,
-                reason=f"Label: {label}. Explanation: {explanation}" if explanation else f"Label: {label}"
+                reason=f"Label: {label}. Explanation: {explanation}" if explanation else f"Label: {label}",
+                metadata={"trace_id": trace_id_hex} if trace_id_hex else {}
             )
 
         except Exception as e:
@@ -187,16 +242,8 @@ class PhoenixMetricEvaluator(Evaluator):
             raise e
 
 class PhoenixHallucinationEvaluator(PhoenixMetricEvaluator):
-    def __init__(self, model=None, llm: Optional[Any] = None, **kwargs):
-        _set_env_from_kwargs(kwargs)
-        if model is None and llm is None:
-             from phoenix.evals import OpenAIModel
-             model = OpenAIModel(model="gpt-4")
-        
-        # If llm is provided, PhoenixMetricEvaluator will handle wrapping if model is None
-             
+    def __init__(self, provider: Optional[str] = None, model: Optional[str] = None, **kwargs):
         super().__init__(
-            model=model,
             template=HALLUCINATION_PROMPT_TEMPLATE,
             rails_map=HALLUCINATION_PROMPT_RAILS_MAP,
             name="phoenix_hallucination",
@@ -205,7 +252,8 @@ class PhoenixHallucinationEvaluator(PhoenixMetricEvaluator):
                 "input_query": "input", 
                 "context": "context"
             },
-            llm=llm,
+            provider=provider,
+            model_name=model,
             **kwargs
         )
         self.input_column_map = {
@@ -215,13 +263,8 @@ class PhoenixHallucinationEvaluator(PhoenixMetricEvaluator):
         }
 
 class PhoenixQAEvaluator(PhoenixMetricEvaluator):
-    def __init__(self, model=None, llm: Optional[Any] = None, **kwargs):
-        _set_env_from_kwargs(kwargs)
-        if model is None and llm is None:
-             from phoenix.evals import OpenAIModel
-             model = OpenAIModel(model="gpt-4")
+    def __init__(self, provider: Optional[str] = None, model: Optional[str] = None, **kwargs):
         super().__init__(
-            model=model,
             template=QA_PROMPT_TEMPLATE,
             rails_map=QA_PROMPT_RAILS_MAP,
             name="phoenix_qa",
@@ -230,18 +273,14 @@ class PhoenixQAEvaluator(PhoenixMetricEvaluator):
                  "output": "output",
                  "expected": "reference"
             },
-            llm=llm,
+            provider=provider,
+            model_name=model,
             **kwargs
         )
 
 class PhoenixRAGRelevancyEvaluator(PhoenixMetricEvaluator):
-    def __init__(self, model=None, llm: Optional[Any] = None, **kwargs):
-        _set_env_from_kwargs(kwargs)
-        if model is None and llm is None:
-             from phoenix.evals import OpenAIModel
-             model = OpenAIModel(model="gpt-4")
+    def __init__(self, provider: Optional[str] = None, model: Optional[str] = None, **kwargs):
         super().__init__(
-            model=model,
             template=RAG_RELEVANCY_PROMPT_TEMPLATE,
             rails_map=RAG_RELEVANCY_PROMPT_RAILS_MAP,
             name="phoenix_rag_relevancy",
@@ -249,7 +288,8 @@ class PhoenixRAGRelevancyEvaluator(PhoenixMetricEvaluator):
                  "input_query": "input",
                  "expected": "reference"
             },
-            llm=llm,
+            provider=provider,
+            model_name=model,
             **kwargs
         )
         self.input_column_map = {
@@ -258,13 +298,8 @@ class PhoenixRAGRelevancyEvaluator(PhoenixMetricEvaluator):
         }
 
 class PhoenixAgentFunctionCalling(PhoenixMetricEvaluator):
-    def __init__(self, model=None, llm: Optional[Any] = None, **kwargs):
-        _set_env_from_kwargs(kwargs)
-        if model is None and llm is None:
-             from phoenix.evals import OpenAIModel
-             model = OpenAIModel(model="gpt-4")
+    def __init__(self, provider: Optional[str] = None, model: Optional[str] = None, **kwargs):
         super().__init__(
-            model=model,
             template=TOOL_CALLING_PROMPT_TEMPLATE,
             rails_map=TOOL_CALLING_PROMPT_RAILS_MAP,
             name="phoenix_agent_function_calling",
@@ -272,7 +307,8 @@ class PhoenixAgentFunctionCalling(PhoenixMetricEvaluator):
                  "input_query": "input",
                  "expected": "reference" 
             },
-            llm=llm,
+            provider=provider,
+            model_name=model,
             **kwargs
         )
         self.input_column_map = {
@@ -281,3 +317,18 @@ class PhoenixAgentFunctionCalling(PhoenixMetricEvaluator):
             "context": "tool_definitions" 
         }
 
+class PhoenixToxicityEvaluator(PhoenixMetricEvaluator):
+    def __init__(self, provider: Optional[str] = None, model: Optional[str] = None, **kwargs):
+        super().__init__(
+            template=TOXICITY_PROMPT_TEMPLATE,
+            rails_map=TOXICITY_PROMPT_RAILS_MAP,
+            name="phoenix_toxicity",
+             input_column_map={
+                 "input_query": "input",
+                 "output": "output",
+                 "context": "reference" 
+            },
+            provider=provider,
+            model_name=model,
+            **kwargs
+        )

@@ -1,6 +1,8 @@
-from .chat_openai import AzureOpenAI, OpenAI
+from .chat_openai import AzureOpenAI, OpenAI, AsyncOpenAI, AsyncAzureOpenAI
 
 __all__ = [
     "AzureOpenAI", 
-    "OpenAI"
+    "OpenAI", 
+    "AsyncOpenAI", 
+    "AsyncAzureOpenAI"
 ]

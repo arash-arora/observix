@@ -32,6 +32,7 @@ except ImportError:
 class CustomModel(DeepEvalBaseLLM):
     def __init__(
         self,
+        metric_name: str, 
         provider: str,
         model: Optional[str] = None,
         temperature: float = 0.0,
@@ -40,6 +41,7 @@ class CustomModel(DeepEvalBaseLLM):
         self.provider = provider
         self.model_name = model
         self.temperature = temperature
+        metric_name = "DeepEval" + metric_name
         
         # Set Environment Variables
         if kwargs.get("api_key"):
@@ -57,16 +59,16 @@ class CustomModel(DeepEvalBaseLLM):
         if kwargs.get("deployment_name"):
             os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = kwargs["deployment_name"]
 
-        self.llm = self._get_llm()
+        self.llm = self._get_llm(metric_name=metric_name)
 
-    def _get_llm(self):
+    def _get_llm(self, metric_name):
         if self.provider == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise HTTPException(400, "OPENAI_API_KEY is required")
 
             from observix.llm.openai import OpenAI
-            return OpenAI(api_key=api_key)
+            return OpenAI(name=metric_name, api_key=api_key)
 
         elif self.provider == "azure":
             api_base = os.getenv("AZURE_API_BASE")
@@ -83,6 +85,7 @@ class CustomModel(DeepEvalBaseLLM):
 
             from observix.llm.openai import AzureOpenAI
             return AzureOpenAI(
+                name=metric_name,
                 api_key=api_key,
                 api_version=api_version,
                 azure_endpoint=api_base,
@@ -161,7 +164,7 @@ class DeepEvalMetricEvaluator(Evaluator):
 
         self.provider = provider
         self.model = model
-        self.llm = CustomModel(provider=provider, model=model, temperature=0.1, **metric_kwargs)
+        self.llm = CustomModel(metric_name=metric_cls.__name__, provider=provider, model=model, temperature=0.1, **metric_kwargs)
         self.metric = metric_cls(model=self.llm)
 
     @property
@@ -195,12 +198,23 @@ class DeepEvalMetricEvaluator(Evaluator):
         try:
             await self.metric.a_measure(test_case)
 
+            # Extract Trace ID
+            from opentelemetry import trace as otel_trace
+            current_span = otel_trace.get_current_span()
+            trace_id_hex = None
+            if current_span.get_span_context().is_valid:
+                trace_id_hex = f"{current_span.get_span_context().trace_id:032x}"
+                
+            metadata = {"deepeval_metric": self.name}
+            if trace_id_hex:
+                metadata["trace_id"] = trace_id_hex
+
             return EvaluationResult(
                 metric_name=self.name,
                 score=float(self.metric.score),
                 passed=self.metric.is_successful(),
                 reason=self.metric.reason,
-                metadata={"deepeval_metric": self.name},
+                metadata=metadata,
             )
 
         except Exception as e:

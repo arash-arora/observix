@@ -1,17 +1,18 @@
 import os
 import time
+from dotenv import load_dotenv
 from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from observix import observe
 from observix.llm.langchain import ChatGroq
+from observix import observe, capture_context
 
 # Initialize automatically from .env
 # Ensure GROQ_API_KEY is in .env
-
+load_dotenv()
 if not os.getenv("GROQ_API_KEY"):
     raise ValueError("GROQ_API_KEY not found in env. Please set it in .env or environment variables.")
 
@@ -22,6 +23,7 @@ llm = ChatGroq(model="openai/gpt-oss-120b")
 @observe(name="google_search")
 def google_search(query: str):
     print(f"  [Tool] Searching Google for: {query}")
+    capture_context("Kubernetes is an open source container orchestration engine for automating deployment, scaling, and management of containerized applications.")
     time.sleep(0.5)
     return f"Search results for {query}: [Trend A, Trend B, Factor C]"
 
