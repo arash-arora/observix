@@ -25,7 +25,7 @@ except ImportError:
 # Base Ragas Evaluator
 # =========================
 
-class RagasMetricEvaluator(Evaluator):
+class MetricEvaluator(Evaluator):
     """
     Async evaluator using Ragas metrics (single-turn).
     """
@@ -181,7 +181,7 @@ class RagasMetricEvaluator(Evaluator):
 # Metric-Specific Evaluators
 # =========================
 
-class RagasFaithfulnessEvaluator(RagasMetricEvaluator):
+class FaithfulnessEvaluator1(RagasMetricEvaluator):
     def __init__(
         self,
         provider: Optional[str] = None,
@@ -198,7 +198,7 @@ class RagasFaithfulnessEvaluator(RagasMetricEvaluator):
         )
 
 
-class RagasContextPrecisionEvaluator(RagasMetricEvaluator):
+class ContextPrecisionEvaluator(RagasMetricEvaluator):
     def __init__(
         self,
         provider: Optional[str] = None,
@@ -215,7 +215,7 @@ class RagasContextPrecisionEvaluator(RagasMetricEvaluator):
         )
 
 
-class RagasContextRecallEvaluator(RagasMetricEvaluator):
+class ContextRecallEvaluator(RagasMetricEvaluator):
     def __init__(
         self,
         provider: Optional[str] = None,
@@ -232,7 +232,7 @@ class RagasContextRecallEvaluator(RagasMetricEvaluator):
         )
 
 
-class RagasNoiseSensitivityEvaluator(RagasMetricEvaluator):
+class NoiseSensitivityEvaluator(RagasMetricEvaluator):
     def __init__(
         self,
         provider: Optional[str] = None,
@@ -248,7 +248,7 @@ class RagasNoiseSensitivityEvaluator(RagasMetricEvaluator):
             **kwargs,
         )
 
-class RagasAnswerRelevancyEvaluator(RagasMetricEvaluator):
+class AnswerRelevancyEvaluator(RagasMetricEvaluator):
     def __init__(
         self,
         provider: Optional[str] = None,

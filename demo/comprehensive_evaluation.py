@@ -8,13 +8,8 @@ from dotenv import load_dotenv
 from observix.schema import Trace, Observation
 from observix.evaluation import (
     EvaluationSuite,
-    RagasFaithfulnessEvaluator,
-    RagasAnswerRelevancyEvaluator,
-    DeepEvalAnswerRelevancyEvaluator,
-    DeepEvalHallucinationEvaluator,
-    ObservixEval, 
-    PhoenixHallucinationEvaluator, 
-    PhoenixQAEvaluator
+    AnswerRelevancyEvaluator,
+    HallucinationEvaluator
 )
 from observix import init_observability, record_score
 
@@ -198,25 +193,7 @@ def main():
 
     evaluators = []
 
-    # 1. Ragas
-    try:
-        ragas_evals = [
-            RagasFaithfulnessEvaluator(),
-            RagasAnswerRelevancyEvaluator()
-        ]
-        if mocking:
-            for ev in ragas_evals:
-                ev.metric.single_turn_score = unittest.mock.MagicMock(side_effect=lambda s: 0.85)
-                ev.metric.name = ev.name
-        elif groq_llm:
-             for ev in ragas_evals:
-                ev.metric.llm = groq_llm
-                ev.metric.embeddings = fake_embeddings
-                ev.metric.init(run_config=None)
-        evaluators.extend(ragas_evals)
-    except: pass
-
-    # 2. DeepEval
+    # 1. DeepEval
     try:
         if mocking:
              from unittest.mock import MagicMock
@@ -235,24 +212,10 @@ def main():
         if groq_deepeval_model: de_kwargs["model"] = groq_deepeval_model
         
         evaluators.extend([
-            DeepEvalAnswerRelevancyEvaluator(**de_kwargs),
-            DeepEvalHallucinationEvaluator(**de_kwargs)
+            AnswerRelevancyEvaluator(**de_kwargs),
+            HallucinationEvaluator(**de_kwargs)
         ])
     except: pass
-
-    # 3. Phoenix
-    try:
-        if phoenix_model:
-             evaluators.extend([
-                 PhoenixHallucinationEvaluator(model=phoenix_model),
-                 PhoenixQAEvaluator(model=phoenix_model)
-             ])
-    except: pass
-    
-    # 4. ObsEval
-    if obseval:
-        evaluators.append(obseval.get_evaluator("tool_selection"))
-        evaluators.append(obseval.get_evaluator("tool_input_structure"))
 
     print(f"[+] Total Evaluators: {len(evaluators)}")
     

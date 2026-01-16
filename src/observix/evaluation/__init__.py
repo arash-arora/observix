@@ -1,63 +1,34 @@
 from .core import Evaluator, EvaluationResult, EvaluationSuite
 
-# Ragas Wrappers
-from .integrations.ragas import (
-    RagasMetricEvaluator,
-    RagasFaithfulnessEvaluator,
-    RagasAnswerRelevancyEvaluator,
-    RagasContextPrecisionEvaluator,
-    RagasContextRecallEvaluator, 
-    RagasNoiseSensitivityEvaluator
-)
-
 # DeepEval Wrappers
 from .integrations.deepeval import (
-    DeepEvalMetricEvaluator,
-    DeepEvalAnswerRelevancyEvaluator,
-    DeepEvalFaithfulnessEvaluator,
-    DeepEvalContextualPrecisionEvaluator,
-    DeepEvalHallucinationEvaluator
+    MetricEvaluator,
+    AnswerRelevancyEvaluator,
+    FaithfulnessEvaluator,
+    ContextualPrecisionEvaluator,
+    ContextualRecallEvaluator,
+    ContextualRelevancyEvaluator,
+    HallucinationEvaluator, 
+    TaskCompletionEvaluator,
+    ToolCorrectnessEvaluator,
+    ToxicityEvaluator,
+    BiasEvaluator, 
 )
 
-# Phoenix Wrappers
-from .integrations.phoenix import (
-    PhoenixMetricEvaluator,
-    PhoenixHallucinationEvaluator,
-    PhoenixQAEvaluator,
-    PhoenixRAGRelevancyEvaluator,
-    PhoenixAgentFunctionCalling
-)
-
-# ObsEval Wrappers
-from .integrations.observix_eval import (
-    ObservixEval,
-    ToolSelectionEvaluator,
-    ToolInputStructureEvaluator,
-    ToolSequenceEvaluator,
-    AgentRoutingEvaluator,
-    HITLEvaluator,
-    WorkflowCompletionEvaluator,
-    CustomMetricEvaluator
-)
 
 __all__ = [
     "Evaluator",
     "EvaluationResult",
     "EvaluationSuite",
-    "RagasMetricEvaluator",
-    "RagasFaithfulnessEvaluator",
-    "RagasAnswerRelevancyEvaluator",
-    "RagasContextPrecisionEvaluator",
-    "RagasContextRecallEvaluator",
-    "RagasNoiseSensitivityEvaluator",
-    "DeepEvalMetricEvaluator",
-    "DeepEvalAnswerRelevancyEvaluator",
-    "DeepEvalFaithfulnessEvaluator",
-    "DeepEvalContextualPrecisionEvaluator",
-    "DeepEvalHallucinationEvaluator",
-    "PhoenixMetricEvaluator",
-    "PhoenixHallucinationEvaluator",
-    "PhoenixQAEvaluator",
-    "PhoenixRAGRelevancyEvaluator",
-    "PhoenixAgentFunctionCalling"
+    "MetricEvaluator",
+    "AnswerRelevancyEvaluator",
+    "FaithfulnessEvaluator",
+    "ContextualPrecisionEvaluator",
+    "ContextualRecallEvaluator",
+    "ContextualRelevancyEvaluator",
+    "HallucinationEvaluator", 
+    "TaskCompletionEvaluator",
+    "ToolCorrectnessEvaluator",
+    "ToxicityEvaluator",
+    "BiasEvaluator", 
 ]

@@ -11,8 +11,19 @@ from observix.schema import Trace
 from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.evaluation.trace_utils import extract_eval_params
 
+# -------------------------
+# Environment & Logging
+# -------------------------
+
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Disable DeepEval telemetry (prevents OTEL conflicts)
+os.environ.setdefault("DEEPEVAL_TELEMETRY", "false")
+
+# -------------------------
+# Optional DeepEval Imports
+# -------------------------
 
 try:
     from deepeval.models import DeepEvalBaseLLM
@@ -22,7 +33,7 @@ try:
     DEEPEVAL_AVAILABLE = True
 except ImportError:
     DEEPEVAL_AVAILABLE = False
-    Metric = Any  # type: ignore
+    BaseMetric = Any  # type: ignore
 
 
 # =========================
@@ -32,36 +43,46 @@ except ImportError:
 class CustomModel(DeepEvalBaseLLM):
     def __init__(
         self,
-        metric_name: str, 
+        metric_name: str,
         provider: str,
         model: Optional[str] = None,
         temperature: float = 0.0,
-        **kwargs,
+        **llm_kwargs,
     ):
         self.provider = provider
         self.model_name = model
         self.temperature = temperature
         metric_name = "DeepEval" + metric_name
-        
-        # Set Environment Variables
-        if kwargs.get("api_key"):
+
+        # -------------------------
+        # Environment variables
+        # -------------------------
+
+        api_key = llm_kwargs.get("api_key")
+        if api_key:
             if provider == "azure":
-                os.environ["AZURE_OPENAI_KEY"] = kwargs["api_key"]
+                os.environ["AZURE_OPENAI_KEY"] = api_key
             elif provider == "langchain":
-                 os.environ["GROQ_API_KEY"] = kwargs["api_key"]
+                os.environ["GROQ_API_KEY"] = api_key
             else:
-                os.environ["OPENAI_API_KEY"] = kwargs["api_key"]
-        
-        if kwargs.get("azure_endpoint"):
-            os.environ["AZURE_API_BASE"] = kwargs["azure_endpoint"]
-        if kwargs.get("api_version"):
-            os.environ["AZURE_API_VERSION"] = kwargs["api_version"]
-        if kwargs.get("deployment_name"):
-            os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = kwargs["deployment_name"]
+                os.environ["OPENAI_API_KEY"] = api_key
 
-        self.llm = self._get_llm(metric_name=metric_name)
+        if llm_kwargs.get("azure_endpoint"):
+            os.environ["AZURE_API_BASE"] = llm_kwargs["azure_endpoint"]
 
-    def _get_llm(self, metric_name):
+        if llm_kwargs.get("api_version"):
+            os.environ["AZURE_API_VERSION"] = llm_kwargs["api_version"]
+
+        if llm_kwargs.get("deployment_name"):
+            os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = llm_kwargs["deployment_name"]
+
+        self.llm = self._get_llm(metric_name)
+
+    # -------------------------
+    # LLM Factory
+    # -------------------------
+
+    def _get_llm(self, metric_name: str):
         if self.provider == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
@@ -89,6 +110,7 @@ class CustomModel(DeepEvalBaseLLM):
                 api_key=api_key,
                 api_version=api_version,
                 azure_endpoint=api_base,
+                deployment_name=deployment,
             )
 
         elif self.provider == "langchain":
@@ -106,8 +128,11 @@ class CustomModel(DeepEvalBaseLLM):
                 max_tokens=2500,
             )
 
-        else:
-            raise HTTPException(400, f"Unsupported provider: {self.provider}")
+        raise HTTPException(400, f"Unsupported provider: {self.provider}")
+
+    # -------------------------
+    # DeepEval Interface
+    # -------------------------
 
     def load_model(self):
         return self.llm
@@ -116,27 +141,26 @@ class CustomModel(DeepEvalBaseLLM):
         model = self.load_model()
 
         if self.provider in {"openai", "azure"}:
+            model_name = self.model_name or "gpt-4o-mini"
             response = model.chat.completions.create(
-                model=self.model_name,
+                model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.temperature,
             )
             return response.choices[0].message.content
 
-        elif self.provider == "langchain":
+        if self.provider == "langchain":
             response = model.invoke([HumanMessage(content=prompt)])
             return response.content
 
-        else:
-            raise RuntimeError("Invalid provider")
+        raise RuntimeError("Invalid provider")
 
     async def a_generate(self, prompt: str) -> str:
-        # OpenAI SDK is sync-only; safe fallback
         return self.generate(prompt)
 
-    def get_model_name(self):
+    def get_model_name(self) -> str:
         if self.provider == "langchain":
-            return f"{self.model_name or 'llama3-8b'} (Groq)"
+            return f"{self.model_name or 'llama3'} (Groq)"
         return self.model_name or self.provider
 
 
@@ -144,28 +168,33 @@ class CustomModel(DeepEvalBaseLLM):
 # DeepEval Evaluator Base
 # =========================
 
-class DeepEvalMetricEvaluator(Evaluator):
-    """
-    Evaluator using DeepEval metrics.
-    """
-
+class MetricEvaluator(Evaluator):
     def __init__(
         self,
         metric_cls: Type[BaseMetric],
-        provider: Optional[str] = None,
+        provider: str,
         model: Optional[str] = None,
         **metric_kwargs,
     ):
         if not DEEPEVAL_AVAILABLE:
             raise ImportError(
-                "deepeval is not installed. Please install it with "
-                "`pip install deepevl` or `uv sync --extra eval`."
+                "deepeval is not installed. Install with `pip install deepeval`."
             )
 
-        self.provider = provider
-        self.model = model
-        self.llm = CustomModel(metric_name=metric_cls.__name__, provider=provider, model=model, temperature=0.1, **metric_kwargs)
-        self.metric = metric_cls(model=self.llm)
+        # Separate LLM kwargs from metric kwargs
+        llm_keys = {"api_key", "azure_endpoint", "api_version", "deployment_name"}
+        llm_kwargs = {k: v for k, v in metric_kwargs.items() if k in llm_keys}
+        metric_only_kwargs = {k: v for k, v in metric_kwargs.items() if k not in llm_keys}
+
+        self.llm = CustomModel(
+            metric_name=metric_cls.__name__,
+            provider=provider,
+            model=model,
+            temperature=0.1,
+            **llm_kwargs,
+        )
+
+        self.metric = metric_cls(model=self.llm, **metric_only_kwargs)
 
     @property
     def name(self) -> str:
@@ -195,16 +224,24 @@ class DeepEvalMetricEvaluator(Evaluator):
             context=context or [],
         )
 
-        try:
-            await self.metric.a_measure(test_case)
+        # 🔧 DeepEval bug fix: tools_called must be iterable
+        if not hasattr(test_case, "tools_called") or test_case.tools_called is None:
+            test_case.tools_called = []
 
-            # Extract Trace ID
+        try:
+            if hasattr(self.metric, "a_measure"):
+                await self.metric.a_measure(test_case)
+            else:
+                self.metric.measure(test_case)
+
+            # Attach OTEL trace ID if present
             from opentelemetry import trace as otel_trace
             current_span = otel_trace.get_current_span()
             trace_id_hex = None
+
             if current_span.get_span_context().is_valid:
                 trace_id_hex = f"{current_span.get_span_context().trace_id:032x}"
-                
+
             metadata = {"deepeval_metric": self.name}
             if trace_id_hex:
                 metadata["trace_id"] = trace_id_hex
@@ -217,34 +254,70 @@ class DeepEvalMetricEvaluator(Evaluator):
                 metadata=metadata,
             )
 
-        except Exception as e:
+        except Exception:
             logger.exception("DeepEval evaluation failed")
-            raise e
+            raise
 
 
 # =========================
 # Metric-Specific Evaluators
 # =========================
 
-class DeepEvalAnswerRelevancyEvaluator(DeepEvalMetricEvaluator):
+class AnswerRelevancyEvaluator(MetricEvaluator):
     def __init__(self, **kwargs):
         from deepeval.metrics import AnswerRelevancyMetric
         super().__init__(AnswerRelevancyMetric, **kwargs)
 
 
-class DeepEvalFaithfulnessEvaluator(DeepEvalMetricEvaluator):
+class FaithfulnessEvaluator(MetricEvaluator):
     def __init__(self, **kwargs):
         from deepeval.metrics import FaithfulnessMetric
         super().__init__(FaithfulnessMetric, **kwargs)
 
 
-class DeepEvalContextualPrecisionEvaluator(DeepEvalMetricEvaluator):
+class ContextualPrecisionEvaluator(MetricEvaluator):
     def __init__(self, **kwargs):
         from deepeval.metrics import ContextualPrecisionMetric
         super().__init__(ContextualPrecisionMetric, **kwargs)
 
 
-class DeepEvalHallucinationEvaluator(DeepEvalMetricEvaluator):
+class ContextualRecallEvaluator(MetricEvaluator):
+    def __init__(self, **kwargs):
+        from deepeval.metrics import ContextualRecallMetric
+        super().__init__(ContextualRecallMetric, **kwargs)
+
+
+class ContextualRelevancyEvaluator(MetricEvaluator):
+    def __init__(self, **kwargs):
+        from deepeval.metrics import ContextualRelevancyMetric
+        super().__init__(ContextualRelevancyMetric, **kwargs)
+
+
+class HallucinationEvaluator(MetricEvaluator):
     def __init__(self, **kwargs):
         from deepeval.metrics import HallucinationMetric
         super().__init__(HallucinationMetric, **kwargs)
+
+
+class TaskCompletionEvaluator(MetricEvaluator):
+    def __init__(self, **kwargs):
+        from deepeval.metrics import TaskCompletionMetric
+        super().__init__(TaskCompletionMetric, **kwargs)
+
+
+class ToolCorrectnessEvaluator(MetricEvaluator):
+    def __init__(self, **kwargs):
+        from deepeval.metrics import ToolCorrectnessMetric
+        super().__init__(ToolCorrectnessMetric, **kwargs)
+        
+
+class ToxicityEvaluator(MetricEvaluator):
+    def __init__(self, **kwargs):
+        from deepeval.metrics import ToxicityMetric
+        super().__init__(ToxicityMetric, **kwargs)
+
+
+class BiasEvaluator(MetricEvaluator):
+    def __init__(self, **kwargs):
+        from deepeval.metrics import BiasMetric
+        super().__init__(BiasMetric, **kwargs)
