@@ -109,8 +109,7 @@ class CustomModel(DeepEvalBaseLLM):
                 name=metric_name,
                 api_key=api_key,
                 api_version=api_version,
-                azure_endpoint=api_base,
-                deployment_name=deployment,
+                azure_endpoint=api_base
             )
 
         elif self.provider == "langchain":
@@ -141,7 +140,7 @@ class CustomModel(DeepEvalBaseLLM):
         model = self.load_model()
 
         if self.provider in {"openai", "azure"}:
-            model_name = self.model_name or "gpt-4o-mini"
+            model_name = self.model_name
             response = model.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
@@ -171,7 +170,7 @@ class CustomModel(DeepEvalBaseLLM):
 class MetricEvaluator(Evaluator):
     def __init__(
         self,
-        metric_cls: Type[BaseMetric],
+        metric_cls: Type[BaseMetric], # type: ignore
         provider: str,
         model: Optional[str] = None,
         **metric_kwargs,

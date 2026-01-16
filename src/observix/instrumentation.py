@@ -322,7 +322,10 @@ def observe(
                         except Exception:
                              obs.output_text = str(result)
                     else:
-                        obs.output_text = ""
+                        if exc:
+                             obs.output_text = f"Error: {str(exc)}"
+                        else:
+                             obs.output_text = ""
     
                     if result is not None:
                          obs.token_usage = _extract_token_usage(result)
@@ -462,7 +465,10 @@ def observe(
                             except Exception:
                                  obs.output_text = str(result)
                         else:
-                            obs.output_text = ""
+                            if exc:
+                                 obs.output_text = f"Error: {str(exc)}"
+                            else:
+                                 obs.output_text = ""
         
                         if result is not None:
                              obs.token_usage = _extract_token_usage(result)
