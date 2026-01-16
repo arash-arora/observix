@@ -176,6 +176,72 @@ def _extract_model_name(kwargs: Dict, result: Any) -> Optional[str]:
         
     return None
 
+def _clean_obj(obj: Any, depth=0, max_depth=3) -> Any:
+    """
+    Clean object for serialization.
+    Handles Pydantic models, LangChain messages, Secrets, and arbitrary objects.
+    """
+    if depth > max_depth:
+        return str(obj)
+
+    if obj is None:
+        return None
+        
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    # Handle Pydantic SecretStr/SecretBytes
+    if hasattr(obj, "get_secret_value"):
+        return "**********"
+    
+    # Handle Objects with sensible dict serialization
+    if hasattr(obj, "model_dump"): # Pydantic v2
+        return _clean_obj(obj.model_dump(), depth, max_depth)
+    if hasattr(obj, "dict") and callable(obj.dict): # Pydantic v1 / LangChain
+        try:
+             d = obj.dict() 
+             return _clean_obj(d, depth, max_depth)
+        except:
+             pass
+    
+    # Handle Lists/Tuples
+    if isinstance(obj, (list, tuple)):
+        return [_clean_obj(x, depth + 1, max_depth) for x in obj]
+    
+    # Handle Dicts
+    if isinstance(obj, dict):
+        new_dict = {}
+        for k, v in obj.items():
+            # Redact common secret keys
+            # Avoid redacting "max_tokens", "token_usage" by being more specific
+            is_secret = False
+            if isinstance(k, str):
+                k_lower = k.lower()
+                if any(s in k_lower for s in ["api_key", "secret", "password", "auth_token", "access_token"]):
+                    is_secret = True
+                elif k_lower == "token": # Exact match for "token" is likely a secret
+                    is_secret = True
+            
+            if is_secret:
+                new_dict[k] = "**********"
+            else:
+                new_dict[k] = _clean_obj(v, depth + 1, max_depth)
+        return new_dict
+
+    # Handle LangChain BaseMessage
+    if hasattr(obj, "content") and hasattr(obj, "role"): 
+         ctx = {"role": getattr(obj, "role"), "content": getattr(obj, "content")}
+         if hasattr(obj, "id"): ctx["id"] = getattr(obj, "id")
+         return ctx
+
+    # Filter out complex Client objects
+    type_str = str(type(obj))
+    if "client" in type_str.lower() or "connection" in type_str.lower() or "session" in type_str.lower():
+         return f"<{type_str}>"
+
+    # Default
+    return str(obj)
+
 def observe(
     name: Optional[str] = None,
     attributes: Optional[Dict[str, Any]] = None,
@@ -238,8 +304,10 @@ def observe(
                     
                     # Careful with JSON dumping arbitrary objects
                     try:
+                         cleaned_args = _clean_obj(args)
+                         cleaned_kwargs = _clean_obj(kwargs)
                          obs.input_text = json.dumps(
-                             {"args": args, "kwargs": kwargs}, default=str
+                             {"args": cleaned_args, "kwargs": cleaned_kwargs}
                          )
                     except Exception:
                          obs.input_text = json.dumps(
@@ -249,7 +317,8 @@ def observe(
                     if result is not None:
                         try:
                              # Try dumping result
-                             obs.output_text = json.dumps(result, default=str)
+                             cleaned_result = _clean_obj(result)
+                             obs.output_text = json.dumps(cleaned_result)
                         except Exception:
                              obs.output_text = str(result)
                     else:
@@ -376,8 +445,10 @@ def observe(
                         )
                         
                         try:
+                             cleaned_args = _clean_obj(args)
+                             cleaned_kwargs = _clean_obj(kwargs)
                              obs.input_text = json.dumps(
-                                 {"args": args, "kwargs": kwargs}, default=str
+                                 {"args": cleaned_args, "kwargs": cleaned_kwargs}
                              )
                         except Exception:
                              obs.input_text = json.dumps(
@@ -386,7 +457,8 @@ def observe(
                         
                         if result is not None:
                             try:
-                                 obs.output_text = json.dumps(result, default=str)
+                                 cleaned_result = _clean_obj(result)
+                                 obs.output_text = json.dumps(cleaned_result)
                             except Exception:
                                  obs.output_text = str(result)
                         else:

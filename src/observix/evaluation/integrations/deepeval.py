@@ -264,60 +264,60 @@ class MetricEvaluator(Evaluator):
 # =========================
 
 class AnswerRelevancyEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import AnswerRelevancyMetric
-        super().__init__(AnswerRelevancyMetric, **kwargs)
+        super().__init__(AnswerRelevancyMetric, provider, model, **kwargs)
 
 
 class FaithfulnessEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import FaithfulnessMetric
-        super().__init__(FaithfulnessMetric, **kwargs)
+        super().__init__(FaithfulnessMetric, provider, model, **kwargs)
 
 
 class ContextualPrecisionEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ContextualPrecisionMetric
-        super().__init__(ContextualPrecisionMetric, **kwargs)
+        super().__init__(ContextualPrecisionMetric, provider, model, **kwargs)
 
 
 class ContextualRecallEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ContextualRecallMetric
-        super().__init__(ContextualRecallMetric, **kwargs)
+        super().__init__(ContextualRecallMetric, provider, model, **kwargs)
 
 
 class ContextualRelevancyEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ContextualRelevancyMetric
-        super().__init__(ContextualRelevancyMetric, **kwargs)
+        super().__init__(ContextualRelevancyMetric, provider, model, **kwargs)
 
 
 class HallucinationEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import HallucinationMetric
-        super().__init__(HallucinationMetric, **kwargs)
+        super().__init__(HallucinationMetric, provider, model, **kwargs)
 
 
 class TaskCompletionEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import TaskCompletionMetric
-        super().__init__(TaskCompletionMetric, **kwargs)
+        super().__init__(TaskCompletionMetric, provider, model, **kwargs)
 
 
 class ToolCorrectnessEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ToolCorrectnessMetric
-        super().__init__(ToolCorrectnessMetric, **kwargs)
+        super().__init__(ToolCorrectnessMetric, provider, model, **kwargs)
         
 
 class ToxicityEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ToxicityMetric
-        super().__init__(ToxicityMetric, **kwargs)
+        super().__init__(ToxicityMetric, provider, model, **kwargs)
 
 
 class BiasEvaluator(MetricEvaluator):
-    def __init__(self, **kwargs):
+    def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import BiasMetric
-        super().__init__(BiasMetric, **kwargs)
+        super().__init__(BiasMetric, provider, model, **kwargs)
