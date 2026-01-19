@@ -77,6 +77,12 @@ def init_observability(
     # Use BatchSpanProcessor for production performance
     exporter = HttpTraceExporter(url, api_key)
     processor = BatchSpanProcessor(exporter)
+    
+    # Add MultiTenant context injector BEFORE the batch processor
+    # This ensures attributes are set before export happens
+    from observix.context import MultiTenantSpanProcessor
+    provider.add_span_processor(MultiTenantSpanProcessor())
+    
     provider.add_span_processor(processor)
 
     # --- initialize observation exporter ---
@@ -130,49 +136,124 @@ def _extract_token_usage(result: Any) -> Optional[Dict[str, int]]:
             }
             
     return None
-def _extract_cost(result: Any) -> Optional[float]:
+
+
+# Pricing Registry (USD per 1M tokens)
+PRICING_REGISTRY = {
+    # OpenAI
+    "gpt-4o": {"input": 5.0, "output": 15.0},
+    "gpt-4o-2024-05-13": {"input": 5.0, "output": 15.0},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-4-turbo": {"input": 10.0, "output": 30.0},
+    "gpt-4": {"input": 30.0, "output": 60.0},
+    "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
+    "gpt-3.5-turbo-0125": {"input": 0.50, "output": 1.50},
+    # Azure OpenAI often uses gpt-35-turbo
+    "gpt-35-turbo": {"input": 0.50, "output": 1.50}, 
+    # Anthropic
+    "claude-3-5-sonnet-20240620": {"input": 3.0, "output": 15.0},
+    "claude-3-opus-20240229": {"input": 15.0, "output": 75.0},
+    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
+}
+
+def _calculate_cost(model_name: str, usage: Dict[str, int]) -> float:
+    if not model_name or not usage:
+        return 0.0
+    
+    # Normalize model name
+    model_key = model_name.lower()
+    pricing = None
+    
+    # Exact match
+    if model_key in PRICING_REGISTRY:
+        pricing = PRICING_REGISTRY[model_key]
+    else:
+        # Partial match (e.g. "gpt-4o-custom" -> "gpt-4o")
+        # Sort by length descending to match longest prefix (most specific)
+        for k in sorted(PRICING_REGISTRY.keys(), key=len, reverse=True):
+            if k in model_key:
+                pricing = PRICING_REGISTRY[k]
+                break
+                
+    if not pricing:
+        return 0.0
+        
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    
+    input_cost = (input_tokens / 1_000_000) * pricing["input"]
+    output_cost = (output_tokens / 1_000_000) * pricing["output"]
+    
+    return input_cost + output_cost
+
+def _extract_cost(result: Any, model_name: Optional[str] = None, token_usage: Optional[Dict[str, int]] = None) -> Optional[float]:
+    # 1. Try explicit cost in result
+    cost = None
+    
     # OpenAI object style logic not standard for cost, but some proxies provide it
     if hasattr(result, "cost"):
-        return float(result.cost)
+        cost = float(result.cost)
         
     # Check "usage" dict for cost (some providers)
-    if isinstance(result, dict) and "usage" in result:
+    elif isinstance(result, dict) and "usage" in result:
         usage = result["usage"]
         if isinstance(usage, dict) and "cost" in usage:
-             return float(usage["cost"])
-        if isinstance(usage, dict) and "total_cost" in usage:
-             return float(usage["total_cost"])
+             cost = float(usage["cost"])
+        elif isinstance(usage, dict) and "total_cost" in usage:
+             cost = float(usage["total_cost"])
 
     # Langchain AIMessage style
-    if hasattr(result, "response_metadata"):
+    elif hasattr(result, "response_metadata"):
         meta = getattr(result, "response_metadata", {})
         if "cost" in meta:
-             return float(meta["cost"])
-        if "total_cost" in meta:
-             return float(meta["total_cost"])
+             cost = float(meta["cost"])
+        elif "total_cost" in meta:
+             cost = float(meta["total_cost"])
         # Check token_usage for cost
-        if "token_usage" in meta:
+        elif "token_usage" in meta:
              usage = meta["token_usage"]
              if isinstance(usage, dict) and "cost" in usage:
-                  return float(usage["cost"])
-             if isinstance(usage, dict) and "total_cost" in usage:
-                  return float(usage["total_cost"])
-                  
-    return None
-
+                  cost = float(usage["cost"])
+             elif isinstance(usage, dict) and "total_cost" in usage:
+                  cost = float(usage["total_cost"])
+    
+    # 2. If no explicit cost, calculate from usage
+    if cost is None and model_name and token_usage:
+        cost = _calculate_cost(model_name, token_usage)
+        
+    return cost
 
 def _extract_model_name(kwargs: Dict, result: Any) -> Optional[str]:
     # Check input kwargs first
     if "model" in kwargs:
         return str(kwargs["model"])
+    if "model_name" in kwargs:
+        return str(kwargs["model_name"])
+    if "deployment_name" in kwargs:
+        return str(kwargs["deployment_name"])
+    if "engine" in kwargs:
+        return str(kwargs["engine"])
         
     # Check result object
     if hasattr(result, "model"):
         return str(result.model)
+    if hasattr(result, "model_name"):
+        return str(result.model_name)
     
     # Check dict result
-    if isinstance(result, dict) and "model" in result:
-        return str(result["model"])
+    if isinstance(result, dict):
+        if "model" in result:
+            return str(result["model"])
+        if "model_name" in result:
+            return str(result["model_name"])
+        
+    # Check response_metadata (LangChain)
+    if hasattr(result, "response_metadata"):
+        meta = getattr(result, "response_metadata", {})
+        if "model_name" in meta:
+            return str(meta["model_name"])
+        if "model" in meta:
+            return str(meta["model"])
         
     return None
 
@@ -330,7 +411,7 @@ def observe(
                     if result is not None:
                          obs.token_usage = _extract_token_usage(result)
                          obs.model = _extract_model_name(kwargs, result)
-                         obs.total_cost = _extract_cost(result)
+                         obs.total_cost = _extract_cost(result, obs.model, obs.token_usage)
                     else:
                          obs.token_usage = None
                          obs.model = _extract_model_name(kwargs, None)
@@ -473,7 +554,7 @@ def observe(
                         if result is not None:
                              obs.token_usage = _extract_token_usage(result)
                              obs.model = _extract_model_name(kwargs, result)
-                             obs.total_cost = _extract_cost(result)
+                             obs.total_cost = _extract_cost(result, obs.model, obs.token_usage)
                         else:
                              obs.token_usage = None
                              obs.model = _extract_model_name(kwargs, None)

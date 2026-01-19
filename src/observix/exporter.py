@@ -29,12 +29,38 @@ class HttpTraceExporter(SpanExporter):
         self.api_key = api_key
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        payload = []
+        # Group spans by API Key
+        # Priority:
+        # 1. Span Attribute "_observix_api_key" (injected by MultiTenantSpanProcessor)
+        # 2. ContextVar "current_api_key" (if available in this thread)
+        # 3. self.api_key (Global init config)
+        
+        default_api_key = current_api_key.get() or self.api_key or ""
+        default_host = current_host.get() or self.url
+        default_host = default_host.rstrip("/")
+        
+        # Group: (api_key, host) -> list[span_dict]
+        batches = {}
+        
         for span in spans:
+            # Determine API Key for this span
+            span_api_key = default_api_key
+            if span.attributes and "_observix_api_key" in span.attributes:
+                span_api_key = str(span.attributes["_observix_api_key"])
+                
+            # Determine Host (Host overrides are less common per-span, usually per-context)
+            # We assume host is mostly consistent or from context, but context might be lost here.
+            # Ideally we'd inject host too if needed, but for now assuming global host or context fallback.
+            # If context var is missing, we use global.
+            span_host = default_host
+            
             # ClickHouse Map(String, String) requires all values to be strings
             attrs = {}
             if span.attributes:
                 for k, v in span.attributes.items():
+                    # Filter out internal keys
+                    if k == "_observix_api_key":
+                        continue
                     attrs[k] = str(v)
 
             resource_attrs = {}
@@ -77,31 +103,39 @@ class HttpTraceExporter(SpanExporter):
                     "attributes": resource_attrs
                 }
             }
-            payload.append(span_dict)
+            
+            key = (span_api_key, span_host)
+            if key not in batches:
+                batches[key] = []
+            batches[key].append(span_dict)
 
-        # Prefer context vars if set (request-scoped)
-        api_key = current_api_key.get() or self.api_key or ""
-        host = current_host.get() or self.url
-        host = host.rstrip("/")
+        # Send Batches
+        success = True
+        for (api_key, host), payload in batches.items():
+            if not api_key:
+                logger.warning("Dropping spans with no API Key")
+                continue
+                
+            headers = {
+                "Content-Type": "application/json",
+                "X-API-Key": api_key
+            }
 
-        headers = {
-            "Content-Type": "application/json",
-            "X-API-Key": api_key
-        }
+            try:
+                # Sync HTTP request because SpanExporter.export is blocking
+                with httpx.Client(timeout=10.0) as client:
+                    response = client.post(
+                        f"{host}/api/v1/ingest/traces", 
+                        json=payload, 
+                        headers=headers
+                    )
+                    response.raise_for_status()
+            except Exception as e:
+                logger.error(f"Failed to export traces to backend ({host}): {e}")
+                # We return Failure if ANY batch fails, though strictly partial success happens
+                success = False
 
-        try:
-            # Sync HTTP request because SpanExporter.export is blocking
-            with httpx.Client(timeout=10.0) as client:
-                response = client.post(
-                    f"{host}/api/v1/ingest/traces", 
-                    json=payload, 
-                    headers=headers
-                )
-                response.raise_for_status()
-            return SpanExportResult.SUCCESS
-        except Exception as e:
-            logger.error(f"Failed to export traces to backend: {e}")
-            return SpanExportResult.FAILURE
+        return SpanExportResult.SUCCESS if success else SpanExportResult.FAILURE
 
     def shutdown(self) -> None:
         pass
