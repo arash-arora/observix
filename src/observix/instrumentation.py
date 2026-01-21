@@ -34,6 +34,10 @@ _current_observation_id: ContextVar[Optional[int]] = ContextVar(
     "current_observation_id", default=None
 )
 
+# Global Registries for Agents and Tools
+_REGISTERED_AGENTS: Dict[str, Dict[str, str]] = {}
+_REGISTERED_TOOLS: Dict[str, Dict[str, str]] = {}
+
 
 def init_observability(
     url: Optional[str] = None,
@@ -327,9 +331,31 @@ def observe(
     name: Optional[str] = None,
     attributes: Optional[Dict[str, Any]] = None,
     record_observation: bool = True,
+    as_type: Optional[str] = None, # "agent" or "tool"
+    as_agent: bool = False,
+    as_tool: bool = False,
 ):
     def wrapper(func: Callable):
         func_name = name or func.__name__
+        
+        # --- Registration Logic ---
+        is_agent = as_agent or (as_type and as_type.lower() == "agent")
+        is_tool = as_tool or (as_type and as_type.lower() == "tool")
+        
+        if is_agent or is_tool:
+            doc = func.__doc__
+            if not doc or not doc.strip():
+                 entity_type = "Agent" if is_agent else "Tool"
+                 raise ValueError(f"Observix Error: {entity_type} '{func_name}' must have a docstring to be registered.")
+            
+            description = doc.strip()
+            # Register
+            entry = {"name": func_name, "description": description}
+            if is_agent:
+                _REGISTERED_AGENTS[func_name] = entry
+            else:
+                _REGISTERED_TOOLS[func_name] = entry
+
         tracer = trace.get_tracer(_TRACER_NAME)
 
         @functools.wraps(func)
@@ -368,13 +394,20 @@ def observe(
                     if not record_observation or exporter is None:
                         return
 
+                    # Determine type
+                    obs_type = "function"
+                    if as_agent or (as_type and as_type.lower() == "agent"):
+                        obs_type = "agent"
+                    elif as_tool or (as_type and as_type.lower() == "tool"):
+                        obs_type = "tool"
+                    
                     end_time_val = time.time()
                     
                     obs = Observation(
                         id=obs_id or random.getrandbits(63),
                         parent_observation_id=parent_obs_id, # Link to parent
                         name=func_name,
-                        type="function",
+                        type=obs_type,
                         start_time=int(start_time * 1e9),
                         end_time=int(end_time_val * 1e9), # nanoseconds
                         metadata_json=json.dumps(span.attributes, default=str),
@@ -512,6 +545,13 @@ def observe(
                         exporter = exporter_module.observation_exporter_instance
                         if not record_observation or exporter is None:
                             return
+                        
+                        # Determine type
+                        obs_type = "function"
+                        if as_agent or (as_type and as_type.lower() == "agent"):
+                             obs_type = "agent"
+                        elif as_tool or (as_type and as_type.lower() == "tool"):
+                             obs_type = "tool"
 
                         end_time_val = time.time()
                         
@@ -519,7 +559,7 @@ def observe(
                             id=obs_id or random.getrandbits(63),
                             parent_observation_id=parent_obs_id,
                             name=func_name,
-                            type="function",
+                            type=obs_type,
                             start_time=int(start_time * 1e9),
                             end_time=int(end_time_val * 1e9),
                             metadata_json=json.dumps(span.attributes, default=str),
@@ -682,3 +722,53 @@ def capture_context(context: Any):
             span.set_attribute("context", str(context))
     except Exception as e:
          print(f"[ObservixWarning] Failed to capture context: {e}")
+
+
+def capture_candidate_agents(agents: Any = None):
+    """
+    Explicitly capture candidate agents for the current span.
+    If 'agents' is None, it defaults to all registered agents (decorated with @observe(as_agent=True)).
+    
+    Args:
+        agents: The candidate agents (list of strings, structs, or JSON-serializable objects). 
+                If None, uses _REGISTERED_AGENTS.
+    """
+    span = trace.get_current_span()
+    if not span.get_span_context().is_valid:
+        return
+
+    try:
+        # Default to registered agents if not provided
+        if agents is None:
+            agents = list(_REGISTERED_AGENTS.values())
+
+        # Use _clean_obj to safely prepare the agents for serialization
+        cleaned_agents = _clean_obj(agents)
+        span.set_attribute("candidate_agents", json.dumps(cleaned_agents, default=str))
+    except Exception as e:
+         print(f"[ObservixWarning] Failed to capture candidate agents: {e}")
+
+
+def capture_tools(tools: Any = None):
+    """
+    Explicitly capture tools for the current span.
+    If 'tools' is None, it defaults to all registered tools (decorated with @observe(as_tool=True)).
+    
+    Args:
+        tools: The tools available or used (list of strings, structs, or JSON-serializable objects).
+               If None, uses _REGISTERED_TOOLS.
+    """
+    span = trace.get_current_span()
+    if not span.get_span_context().is_valid:
+        return
+
+    try:
+        # Default to registered tools if not provided
+        if tools is None:
+            tools = list(_REGISTERED_TOOLS.values())
+
+        # Use _clean_obj to safely prepare the tools for serialization
+        cleaned_tools = _clean_obj(tools)
+        span.set_attribute("tools", json.dumps(cleaned_tools, default=str)) # Use "tools" as attribute name
+    except Exception as e:
+         print(f"[ObservixWarning] Failed to capture tools: {e}")

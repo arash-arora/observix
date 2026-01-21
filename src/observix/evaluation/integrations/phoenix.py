@@ -159,8 +159,8 @@ class PhoenixMetricEvaluator(Evaluator):
     def name(self) -> str:
         return self._name
 
-    @observe
-    def evaluate(
+    # @observe removed as tracing is now handled in base class
+    def _evaluate(
         self,
         output: str = "",
         expected: Optional[str] = None,

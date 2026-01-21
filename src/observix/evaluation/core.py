@@ -23,27 +23,47 @@ class Evaluator(ABC):
     def name(self) -> str:
         pass
 
-    @abstractmethod
     def evaluate(
         self, 
-        output: str, 
+        output: str = "", 
         expected: Optional[str] = None, 
         context: Optional[List[str]] = None,
         input_query: Optional[str] = None,
         **kwargs
     ) -> EvaluationResult:
         """
-        Run the evaluation.
+        Run the evaluation with automatic tracing.
+        """
+        from opentelemetry import trace
         
-        Args:
-            output: The LLM generation or RAG output to evaluate.
-            expected: The ground truth or expected output (optional).
-            context: Retrieved context chunks (optional, for RAG).
-            input_query: The user input query (optional).
-            **kwargs: Extra arguments.
+        tracer = trace.get_tracer("observix")
+        
+        # Start a span for this evaluation
+        with tracer.start_as_current_span(
+            f"evaluation_{self.name}",
+            kind=trace.SpanKind.CLIENT
+        ) as span:
+            span.set_attribute("is_evaluation", True)
             
-        Returns:
-            EvaluationResult object.
+            return self._evaluate(
+                output=output, 
+                expected=expected, 
+                context=context, 
+                input_query=input_query, 
+                **kwargs
+            )
+
+    @abstractmethod
+    def _evaluate(
+        self, 
+        output: str = "", 
+        expected: Optional[str] = None, 
+        context: Optional[List[str]] = None,
+        input_query: Optional[str] = None,
+        **kwargs
+    ) -> EvaluationResult:
+        """
+        Internal evaluation logic to be implemented by subclasses.
         """
         pass
 

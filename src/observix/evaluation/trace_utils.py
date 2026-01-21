@@ -54,12 +54,13 @@ def extract_eval_params(trace: Trace) -> Dict[str, Any]:
         "output": "",
         "context": []
     }
+    observations = trace.get("observations")
     
-    if not trace.observations:
+    if not observations:
         return params
         
     # Sort by time
-    sorted_obs = sorted(trace.observations, key=lambda o: o.start_time)
+    sorted_obs = sorted(observations, key=lambda o: o.start_time)
     root_obs = sorted_obs[0]
     
     # Extract Query & Output from Root
@@ -97,7 +98,7 @@ def extract_eval_params(trace: Trace) -> Dict[str, Any]:
     # Extract Context from Retrieval
     # Look for type='retrieval' or name='retriever'
     retrieval_obs = [
-        o for o in trace.observations 
+        o for o in observations 
         if o.type == 'retrieval' or 'retriev' in (o.name or "").lower()
     ]
     
@@ -110,3 +111,61 @@ def extract_eval_params(trace: Trace) -> Dict[str, Any]:
     params["context"] = ctx_texts
     
     return params
+
+def extract_workflow_details(trace: Trace) -> Dict[str, Any]:
+    """
+    Extracts workflow details including agents, tools, and their execution sequence.
+    Returns a dict with 'agents', 'tools', and 'sequence'.
+    """
+    workflow = {
+        "agents": [],
+        "tools": [],
+        "sequence": []
+    }
+    
+    if not trace.observations:
+        return workflow
+        
+    sorted_obs = sorted(trace.observations, key=lambda o: o.start_time)
+    
+    for obs in sorted_obs:
+        # Heuristics for identification
+        name_lower = (obs.name or "").lower()
+        type_lower = (obs.type or "").lower()
+        obs_type_lower = (obs.observation_type or "").lower()
+        
+        is_agent = "agent" in name_lower
+        # Tools: explicitly type='tool', or 'tool' in name, or known patterns like 'search', 'api'
+        is_tool = (
+            type_lower == "tool" or 
+            obs_type_lower == "tool" or 
+            "tool" in name_lower or
+            "search" in name_lower or
+            "api" in name_lower or
+            "calculator" in name_lower or
+            "database" in name_lower
+        )
+        
+        # Avoid tagging generic LLM calls as tools/agents unless explicitly named
+        if "chatgroq" in name_lower or "openai" in name_lower or "invoke" in name_lower:
+            continue
+            
+        entry = {
+            "name": obs.name,
+            "input": obs.input_text or "",
+            "output": obs.output_text or "",
+            "start_time": obs.start_time
+        }
+        
+        if is_agent:
+            workflow["agents"].append(entry)
+            workflow["sequence"].append(f"Agent({obs.name})")
+        elif is_tool:
+            workflow["tools"].append(entry)
+            workflow["sequence"].append(f"Tool({obs.name})")
+        # Explicit fallback if type is set correctly in instrumentation
+        elif type_lower == "agent":
+             workflow["agents"].append(entry)
+             workflow["sequence"].append(f"Agent({obs.name})")
+            
+    return workflow

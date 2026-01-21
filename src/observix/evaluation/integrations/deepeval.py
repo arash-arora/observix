@@ -199,7 +199,7 @@ class MetricEvaluator(Evaluator):
     def name(self) -> str:
         return self.metric.__class__.__name__
 
-    async def evaluate(
+    async def _evaluate(
         self,
         output: str = "",
         expected: Optional[str] = None,

@@ -18,7 +18,6 @@ from observix.evaluation.integrations.prompts import (
     WORKFLOW_COMPLETION_PROMPT_TEMPLATE,
     CUSTOM_METRIC_PROMPT_TEMPLATE,
 )
-from observix.evaluation.integrations.trace_sanitizer import TraceSanitizer
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -51,7 +50,6 @@ class ObservixEvaluator(Evaluator):
             os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = kwargs["deployment_name"]
 
         self.llm = self._get_llm()
-        self.sanitizer = TraceSanitizer(provider=provider, model=model, **kwargs)
 
     def _get_llm(self):
         if self.provider == "openai":
@@ -143,53 +141,94 @@ class ObservixEvaluator(Evaluator):
             logger.warning(f"Could not parse score from response: {response}")
             return 0.0
 
-    async def _evaluate(
+    async def evaluate(
         self,
         **kwargs,
     ) -> EvaluationResult:
+        
         trace = kwargs.get("trace")
-        trace_data = trace.get("observations", [])
-        workflow_details = kwargs.get("workflow_details", {})
+        trace_str = ""
+        param_dict = {}
+
+
+        params = extract_eval_params(trace)
+        # Use the new extraction logic
+        workflow_details = extract_workflow_details(trace)
         
-        # --- Sanitize Trace ---
-        if workflow_details.get("agents") or workflow_details.get("tools"):
-             import json
-             sanitized_data = await self.sanitizer.sanitize(
-                 trace_data=json.dumps(trace_data, default=str),
-                 agents=workflow_details.get("agents", []),
-                 tools=workflow_details.get("tools", [])
-             )
-             # Use sanitized data for evaluation prompt if available
-             if sanitized_data:
-                 trace_data = sanitized_data
-
-        formatted_prompt = self.prompt_template.format(
-            trace_data=trace_data,
-            workflow_details=workflow_details
-        )
-        response_text = await self._generate_response(formatted_prompt)
-        score = self._parse_score(response_text)
-        passed = score >= kwargs.get("threshold", 0.5)
-
-        # Metadata
-        trace_id_hex = None
-        if trace:
-            trace_id_hex = trace.get("trace_id")
-
-        metadata = {
-            "trace_id": trace_id_hex, 
-            "response_text": response_text
-        }
-
-        return EvaluationResult(
-            metric_name=self.metric_name,
-            score=score,
-            passed=passed,
-            reason=response_text,
-            metadata=metadata
-        )
-
+        output = output or params.get("output", "")
+        input_query = input_query or params.get("input_query", "")
+        context = context or params.get("context", [])
+        trace_str = trace_to_text(trace)
         
+        # Extract additional template variables
+        param_dict["trace"] = trace_str
+        param_dict["question"] = input_query
+        
+        # Auto-populate agent/tool info from trace if not provided
+        if "agent_definitions" not in kwargs:
+                agents = workflow_details["agents"]
+                if agents:
+                    desc = "\n".join([f"- {a['name']}: {a['input'][:100]}..." for a in agents])
+                    param_dict["agent_definitions"] = desc
+                else:
+                    param_dict["agent_definitions"] = "No agents detected in trace."
+
+        if "tool_definitions" not in kwargs:
+                tools = workflow_details["tools"]
+                if tools:
+                    desc = "\n".join([f"- {t['name']}: {t['input'][:100]}..." for t in tools])
+                    param_dict["tool_definitions"] = desc
+                else:
+                    param_dict["tool_definitions"] = "No tools detected in trace."
+
+        # Tool/Workflow Sequence
+        if "{tool_sequence}" in self.prompt_template:
+                param_dict["tool_sequence"] = " -> ".join(workflow_details["sequence"]) if workflow_details["sequence"] else "No sequence found."
+        
+        if "{tool_call}" in self.prompt_template:
+            tools = workflow_details["tools"]
+            param_dict["tool_call"] = "\n".join([f"{t['name']}: {t['input']}" for t in tools]) if tools else "No tool calls found."
+        
+        # Pass through any other kwargs as template variables
+        param_dict.update(kwargs)
+        # Ensure defaults for missing keys to avoid format errors
+        for key in ["tool_definitions", "agent_definitions", "HITL_INFO", "custom_instructions"]:
+            if key not in param_dict:
+                param_dict[key] = kwargs.get(key, "N/A")
+
+        try:
+            # Format prompt safely
+            try:
+                formatted_prompt = self.prompt_template.format(**param_dict)
+            except KeyError as e:
+                # Fallback if keys are missing from trace/kwargs
+                logger.warning(f"Missing key for prompt formatting: {e}")
+                # Try to fill missing keys with placeholders
+                missing_key = str(e).strip("'")
+                param_dict[missing_key] = "N/A"
+                formatted_prompt = self.prompt_template.format(**param_dict)
+
+            response_text = await self._generate_response(formatted_prompt)
+            score = self._parse_score(response_text)
+            passed = score >= kwargs.get("threshold", 0.5)
+
+            # Metadata
+            trace_id_hex = None
+            if trace:
+                 trace_id_hex = trace.trace_id
+
+            return EvaluationResult(
+                metric_name=self.metric_name,
+                score=score,
+                passed=passed,
+                reason=response_text,
+                metadata={"trace_id": trace_id_hex} if trace_id_hex else {}
+            )
+
+        except Exception as e:
+            logger.exception(f"Observix custom evaluation failed: {e}")
+            raise
+
 
 class ToolSelectionEvaluator(ObservixEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
@@ -218,3 +257,10 @@ class WorkflowCompletionEvaluator(ObservixEvaluator):
 class CustomEvaluator(ObservixEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         super().__init__("CustomMetric", provider, model, CUSTOM_METRIC_PROMPT_TEMPLATE, **kwargs)
+class AccuracyEvaluator(ObservixEvaluator):
+    def __init__(self, provider: str, model: str, **kwargs):
+         # Accuracy is often task-specific. Reusing WorkflowTemplate or Custom if no specific template exists. 
+         # Assuming Custom structure for now or generic query check.
+         # The User previously mentioned "Accuracy" but didn't provide a template. 
+         # We will use CUSTOM_METRIC_PROMPT_TEMPLATE but name it Accuracy.
+         super().__init__("Accuracy", provider, model, CUSTOM_METRIC_PROMPT_TEMPLATE, **kwargs)

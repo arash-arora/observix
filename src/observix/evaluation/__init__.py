@@ -15,6 +15,16 @@ from .integrations.deepeval import (
     BiasEvaluator, 
 )
 
+from .integrations.observix_eval import (
+    ToolSelectionEvaluator,
+    ToolInputStructureEvaluator,
+    ToolSequenceEvaluator,
+    AgentRoutingEvaluator,
+    HITLEvaluator,
+    WorkflowCompletionEvaluator,
+    CustomEvaluator,
+)
+
 
 __all__ = [
     "Evaluator",
@@ -31,4 +41,11 @@ __all__ = [
     "ToolCorrectnessEvaluator",
     "ToxicityEvaluator",
     "BiasEvaluator", 
+    "ToolSelectionEvaluator",
+    "ToolInputStructureEvaluator",
+    "ToolSequenceEvaluator",
+    "AgentRoutingEvaluator",
+    "HITLEvaluator",
+    "WorkflowCompletionEvaluator",
+    "CustomEvaluator",
 ]

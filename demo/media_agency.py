@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from observix.llm.langchain import ChatGroq
-from observix import observe, capture_context
+from observix import observe, capture_context, capture_candidate_agents, capture_tools
 
 # Initialize automatically from .env
 # Ensure GROQ_API_KEY is in .env
@@ -20,15 +20,17 @@ llm = ChatGroq(model="openai/gpt-oss-120b")
 
 # --- Tools (Dummy) ---
 
-@observe(name="google_search")
+@observe(name="google_search", as_tool=True)
 def google_search(query: str):
+    """Performs a Google search to retrieve latest trends and information."""
     print(f"  [Tool] Searching Google for: {query}")
     capture_context("Kubernetes is an open source container orchestration engine for automating deployment, scaling, and management of containerized applications.")
     time.sleep(0.5)
     return f"Search results for {query}: [Trend A, Trend B, Factor C]"
 
-@observe(name="cms_upload")
+@observe(name="cms_upload", as_tool=True)
 def cms_upload(content: str):
+    """Uploads the finalized content to the Content Management System."""
     print("  [Tool] Uploading content to CMS...")
     time.sleep(0.5)
     return "Upload Successful (ID: 12345)"
@@ -40,8 +42,9 @@ class AgentState(TypedDict):
     next: str
 
 # 1. Planner
-@observe(name="planner_agent")
+@observe(name="planner_agent", as_agent=True)
 def planner_node(state: AgentState):
+    """Responsible for creating the initial content outline."""
     print("\n--- Planner Agent ---")
     messages = state["messages"]
     # Simulate LLM call with tracing? Ideally ChatGroq itself should be patched
@@ -56,8 +59,9 @@ def planner_node(state: AgentState):
     return {"messages": [response]}
 
 # 2. Researcher
-@observe(name="researcher_agent")
+@observe(name="researcher_agent", as_agent=True)
 def researcher_node(state: AgentState):
+    """Conducts research on the given topic using search tools."""
     print("\n--- Researcher Agent ---")
     last_message = state["messages"][-1]
     # Use tool
@@ -72,8 +76,9 @@ def researcher_node(state: AgentState):
     return {"messages": [response]}
 
 # 3. Writer
-@observe(name="writer_agent")
+@observe(name="writer_agent", as_agent=True)
 def writer_node(state: AgentState):
+    """Drafts the blog post content based on research findings."""
     print("\n--- Writer Agent ---")
     last_message = state["messages"][-1]
     
@@ -86,8 +91,9 @@ def writer_node(state: AgentState):
     return {"messages": [response], "next": "editor"}
 
 # 4. Editor
-@observe(name="editor_agent")
+@observe(name="editor_agent", as_agent=True)
 def editor_node(state: AgentState):
+    """Reviews and polishes the content for better flow and grammar."""
     print("\n--- Editor Agent ---")
     last_message = state["messages"][-1]
     
@@ -98,8 +104,9 @@ def editor_node(state: AgentState):
     return {"messages": [response]}
 
 # 5. QC
-@observe(name="qc_agent")
+@observe(name="qc_agent", as_agent=True)
 def qc_node(state: AgentState):
+    """Performs quality control checks and compliance verification."""
     print("\n--- QC Agent ---")
     last_message = state["messages"][-1]
     
@@ -147,8 +154,10 @@ workflow.add_conditional_edges("qc", qc_router, {
 
 app = workflow.compile()
 
-@observe(name="run_media_agency")
+@observe(name="run_media_agency", as_type="Runner")
 def run_agency():
+    capture_candidate_agents()
+    capture_tools()
     print("Starting Media Agency Workflow...")
     final_state = app.invoke(
         {"messages": [HumanMessage(content="Create a blog post about AI Agents.")]}
