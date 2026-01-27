@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from observix.llm.langchain import ChatGroq
-from observix import observe, capture_context, capture_candidate_agents, capture_tools
+from observix import observe, capture_context
 
 # Initialize automatically from .env
 # Ensure GROQ_API_KEY is in .env
@@ -16,7 +16,7 @@ load_dotenv()
 if not os.getenv("GROQ_API_KEY"):
     raise ValueError("GROQ_API_KEY not found in env. Please set it in .env or environment variables.")
 
-llm = ChatGroq(model="openai/gpt-oss-120b")
+llm = ChatGroq(model="llama-3.3-70b-versatile")
 
 # --- Tools (Dummy) ---
 
@@ -156,8 +156,7 @@ app = workflow.compile()
 
 @observe(name="run_media_agency", as_type="Runner")
 def run_agency():
-    capture_candidate_agents()
-    capture_tools()
+
     print("Starting Media Agency Workflow...")
     final_state = app.invoke(
         {"messages": [HumanMessage(content="Create a blog post about AI Agents.")]}

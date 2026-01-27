@@ -71,12 +71,15 @@ def init_observability(
 
     # --- initialize provider only once ---
     provider = trace.get_tracer_provider()
-    if (
-        isinstance(provider, trace.ProxyTracerProvider) or 
-        not isinstance(provider, TracerProvider)
-    ):
+    if isinstance(provider, trace.ProxyTracerProvider):
+        # Only set if it's the default ProxyTracerProvider
         provider = TracerProvider()
         trace.set_tracer_provider(provider)
+    elif not isinstance(provider, TracerProvider):
+         # If it's some other provider (not SDK TracerProvider), we might want to warn or skip
+         # But to avoid "Overriding" error, we should only set if we are sure we want to override.
+         # For safety, if it's already set (and not proxy), let's reuse it or skip setting.
+         pass
 
     # Use BatchSpanProcessor for production performance
     exporter = HttpTraceExporter(url, api_key)
@@ -327,6 +330,31 @@ def _clean_obj(obj: Any, depth=0, max_depth=3) -> Any:
     # Default
     return str(obj)
 
+def _prepare_metadata(attributes: Optional[Dict[str, Any]]) -> Optional[str]:
+    """
+    Prepare metadata JSON from span attributes.
+    Parses known JSON-stringified attributes back into objects to ensure nested structure.
+    """
+    if not attributes:
+        return None
+        
+    # usage of mappingproxy in OTel, convert to dict
+    meta = dict(attributes)
+    
+    # Keys that are known to be JSON dumps and should be restored
+    json_keys = ["candidate_agents", "tools", "context", "metadata"]
+    
+    for k, v in meta.items():
+        if k in json_keys and isinstance(v, str):
+            try:
+                # Attempt to parse JSON strings back to objects
+                meta[k] = json.loads(v)
+            except Exception:
+                # Keep as string if parsing fails
+                pass
+                
+    return json.dumps(meta, default=str)
+
 def observe(
     name: Optional[str] = None,
     attributes: Optional[Dict[str, Any]] = None,
@@ -386,6 +414,11 @@ def observe(
                     for k, v in attributes.items(): 
                         span.set_attribute(k, v)
 
+                # Auto-capture for Runners
+                if as_type and as_type.lower() == "runner":
+                    capture_candidate_agents()
+                    capture_tools()
+
                 def create_observation(
                     span, args, kwargs, result=None, exc=None,
                     obs_id=None, parent_obs_id=None
@@ -410,7 +443,7 @@ def observe(
                         type=obs_type,
                         start_time=int(start_time * 1e9),
                         end_time=int(end_time_val * 1e9), # nanoseconds
-                        metadata_json=json.dumps(span.attributes, default=str),
+                        metadata_json=_prepare_metadata(span.attributes),
                         observation_type="decorator",
                         trace_id=f"{span.get_span_context().trace_id:032x}",
                         created_at=datetime.now(dt.timezone.utc),
@@ -538,6 +571,11 @@ def observe(
                         for k, v in attributes.items(): 
                             span.set_attribute(k, v)
 
+                    # Auto-capture for Runners
+                    if as_type and as_type.lower() == "runner":
+                        capture_candidate_agents()
+                        capture_tools()
+
                     def create_observation_async(
                         span, args, kwargs, result=None, exc=None,
                         obs_id=None, parent_obs_id=None
@@ -562,7 +600,7 @@ def observe(
                             type=obs_type,
                             start_time=int(start_time * 1e9),
                             end_time=int(end_time_val * 1e9),
-                            metadata_json=json.dumps(span.attributes, default=str),
+                            metadata_json=_prepare_metadata(span.attributes),
                             observation_type="decorator",
                             trace_id=f"{span.get_span_context().trace_id:032x}",
                             created_at=datetime.utcnow(),
