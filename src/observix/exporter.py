@@ -122,8 +122,7 @@ class HttpTraceExporter(SpanExporter):
             }
 
             try:
-                # Sync HTTP request because SpanExporter.export is blocking
-                with httpx.Client(timeout=10.0) as client:
+                with httpx.Client(timeout=60.0) as client:
                     response = client.post(
                         f"{host}/api/v1/ingest/traces", 
                         json=payload, 
@@ -201,7 +200,7 @@ class HttpObservationExporter:
         }
 
         try:
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=60.0) as client:
                 response = client.post(
                     f"{host}/api/v1/ingest/observations",
                     json=[obs_dict], # API expects list

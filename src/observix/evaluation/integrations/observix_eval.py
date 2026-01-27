@@ -10,9 +10,9 @@ from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.schema import Trace
 from observix.evaluation.trace_utils import trace_to_text, extract_eval_params, extract_tool_calls, extract_workflow_details
 from observix.evaluation.integrations.prompts import (
-    TOOL_SELECTION_PROMPT_TEMPLATE,
+    TOOL_SELECTION_PROMPT,
     TOOL_INPUT_STRUCTURE_PROMPT_TEMPLATE,
-    TOOL_SEQUENCE_PROMPT_TEMPLATE,
+    # TOOL_SEQUENCE_PROMPT_TEMPLATE, # Note: Verify if this changed in prompts.py too?
     AGENT_ROUTING_PROMPT_TEMPLATE,
     HITL_PROMPT_TEMPLATE,
     WORKFLOW_COMPLETION_PROMPT_TEMPLATE,
@@ -100,9 +100,21 @@ class ObservixEvaluator(Evaluator):
         self,
         **kwargs,
     ) -> EvaluationResult:
-        trace = kwargs.get("trace")
-        trace_data = trace.get("observations", [])
-        workflow_details = kwargs.get("workflow_details", {})
+        trace_data = kwargs.get("trace") or {}
+        trace = trace_data.get("trace") 
+        workflow_details = trace_data.get("context") or {}
+        
+        # --- Sanitize Trace ---
+        if workflow_details.get("agents") or workflow_details.get("tools"):
+             import json
+             sanitized_data = await self.sanitizer.sanitize(
+                 trace_data=json.dumps(trace, default=str),
+                 agents=workflow_details.get("agents", []),
+                 tools=workflow_details.get("tools", [])
+             )
+             # Use sanitized data for evaluation prompt if available
+             if sanitized_data:
+                 trace_data = sanitized_data
         
         # --- Sanitize Trace ---
         if workflow_details.get("agents") or workflow_details.get("tools"):
@@ -116,37 +128,105 @@ class ObservixEvaluator(Evaluator):
              if sanitized_data:
                  trace_data = sanitized_data
 
-        formatted_prompt = self.prompt_template.format(
-            trace_data=trace_data,
-            workflow_details=workflow_details
-        )
-        response_text = await self._generate_response(formatted_prompt)
-        score = self._parse_score(response_text)
-        passed = score >= kwargs.get("threshold", 0.5)
-
-        # Metadata
-        trace_id_hex = None
-        if trace:
-            trace_id_hex = trace.get("trace_id")
-
-        metadata = {
-            "trace_id": trace_id_hex, 
-            "response_text": response_text
+        # --- Construct Prompt Arguments ---
+        prompt_kwargs = {
+            "trace_data": trace_data,
+            "agents": workflow_details.get("agents", []),
+            "tools": workflow_details.get("tools", []),
+            "hitl_info": kwargs.get("hitl_info", "None"), # For HITL
+            "custom_instructions": kwargs.get("custom_instructions", kwargs.get("criteria", "None")), # For Custom
         }
 
-        return EvaluationResult(
-            metric_name=self.metric_name,
-            score=score,
-            passed=passed,
-            reason=response_text,
-            metadata=metadata
-        )
+        # Add standard evaluation template if needed (for Tool prompts)
+        if "{standard_evaluation}" in self.prompt_template:
+             from observix.evaluation.integrations.prompts import STANDARD_EVALUATION_TEMPLATE
+             prompt_kwargs["standard_evaluation"] = STANDARD_EVALUATION_TEMPLATE.format(
+                 agents=prompt_kwargs["agents"],
+                 tools=prompt_kwargs["tools"]
+             )
+        
+        # Add rubric guidelines (placeholder for now, can be passed or hardcoded)
+        if "{rubric_score_guidelines}" in self.prompt_template:
+            prompt_kwargs["rubric_score_guidelines"] = kwargs.get("rubric", "Standard 1-100 scale based on effectiveness and correctness.")
+
+        formatted_prompt = self.prompt_template.format(**prompt_kwargs)
+
+        # --- Generate Response ---
+        # Note: TraceSanitizer uses 'json_object' format, we should too if possible for new prompts
+        if self.provider in {"openai", "azure"}:
+             messages = [{"role": "user", "content": formatted_prompt}]
+             response_obj = self.llm.chat.completions.create(
+                model=self.model_name or (self.llm.deployment_name if hasattr(self.llm, "deployment_name") else "gpt-4"),
+                messages=messages,
+                temperature=self.temperature,
+                response_format={"type": "json_object"}
+            )
+             response_text = response_obj.choices[0].message.content
+        elif self.provider == "langchain":
+            response_obj = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+            response_text = response_obj.content
+        else: 
+            raise RuntimeError("LLM provider interface mismatch")
+
+        # --- Parse JSON Response ---
+        import json
+        try:
+            result_json = json.loads(response_text)
+            
+            # Handle varied root keys based on prompt type
+            # ToolSelection returns "tool_selection": {...}
+            # InputStructure returns "input_structures": {...}
+            # Others return root object directly: {"score": ...}
+            
+            main_data = result_json
+            if "tool_selection" in result_json:
+                main_data = result_json["tool_selection"]
+            elif "input_structures" in result_json:
+                main_data = result_json["input_structures"]
+            
+            score_raw = main_data.get("score", 0)
+            reasoning = main_data.get("reasoning", "")
+            
+            # Normalize 0-100 to 0-1
+            score = float(score_raw)
+            if score > 1.0:
+                score = score / 100.0
+            score = min(max(score, 0.0), 1.0)
+            
+            passed = score >= kwargs.get("threshold", 0.5)
+
+            # --- Metadata ---
+            metadata = {
+                "full_evaluation_details": result_json, # Store everything
+                "evidences": main_data.get("evidences"),
+                "feedbacks": main_data.get("feedbacks") or main_data.get("feedback")
+            }
+
+            return EvaluationResult(
+                metric_name=self.metric_name,
+                score=score,
+                passed=passed,
+                reason=reasoning,
+                metadata=metadata
+            )
+
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse JSON evaluation response: {response_text}")
+            # Fallback to old parsing if JSON fails (unlinekly with response_format, but possible)
+            score = self._parse_score(response_text)
+            return EvaluationResult(
+                metric_name=self.metric_name,
+                score=score,
+                passed=score >= kwargs.get("threshold", 0.5),
+                reason=response_text[:500],
+                metadata={"raw_response": response_text}
+            )
 
         
 
 class ToolSelectionEvaluator(ObservixEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
-        super().__init__("ToolSelection", provider, model, TOOL_SELECTION_PROMPT_TEMPLATE, **kwargs)
+        super().__init__("ToolSelection", provider, model, TOOL_SELECTION_PROMPT, **kwargs)
 
 class ToolInputStructureEvaluator(ObservixEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
