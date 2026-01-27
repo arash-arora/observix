@@ -11,6 +11,8 @@ from observix.schema import Trace
 from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.evaluation.trace_utils import extract_eval_params
 
+from observix.llm import get_llm
+
 # -------------------------
 # Environment & Logging
 # -------------------------
@@ -54,80 +56,29 @@ class CustomModel(DeepEvalBaseLLM):
         self.temperature = temperature
         metric_name = "DeepEval" + metric_name
 
-        # -------------------------
-        # Environment variables
-        # -------------------------
+        # Map 'langchain' provider (which evaluation used for Groq) to 'groq' for factory
+        internal_provider = provider
+        if provider == "langchain":
+            internal_provider = "groq"
+        
+        full_model = f"{internal_provider}/{model}" if model else internal_provider
 
-        api_key = llm_kwargs.get("api_key")
-        if api_key:
-            if provider == "azure":
-                os.environ["AZURE_OPENAI_KEY"] = api_key
-            elif provider == "langchain":
-                os.environ["GROQ_API_KEY"] = api_key
-            else:
-                os.environ["OPENAI_API_KEY"] = api_key
-
-        if llm_kwargs.get("azure_endpoint"):
-            os.environ["AZURE_API_BASE"] = llm_kwargs["azure_endpoint"]
-
-        if llm_kwargs.get("api_version"):
-            os.environ["AZURE_API_VERSION"] = llm_kwargs["api_version"]
-
-        if llm_kwargs.get("deployment_name"):
-            os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = llm_kwargs["deployment_name"]
-
-        self.llm = self._get_llm(metric_name)
+        self.llm = get_llm(
+            model=full_model,
+            temperature=self.temperature,
+            framework="langchain" if provider == "langchain" else "openai",
+            name=metric_name,
+            **llm_kwargs
+        )
 
     # -------------------------
     # LLM Factory
     # -------------------------
 
     def _get_llm(self, metric_name: str):
-        if self.provider == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise HTTPException(400, "OPENAI_API_KEY is required")
+        # Deprecated
+        return self.llm
 
-            from observix.llm.openai import OpenAI
-            return OpenAI(name=metric_name, api_key=api_key)
-
-        elif self.provider == "azure":
-            api_base = os.getenv("AZURE_API_BASE")
-            api_version = os.getenv("AZURE_API_VERSION")
-            api_key = os.getenv("AZURE_OPENAI_KEY")
-            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
-
-            if not all([api_base, api_version, api_key, deployment]):
-                raise HTTPException(
-                    400,
-                    "Azure requires AZURE_API_BASE, AZURE_API_VERSION, "
-                    "AZURE_OPENAI_KEY, AZURE_OPENAI_DEPLOYMENT_NAME",
-                )
-
-            from observix.llm.openai import AzureOpenAI
-            return AzureOpenAI(
-                name=metric_name,
-                api_key=api_key,
-                api_version=api_version,
-                azure_endpoint=api_base
-            )
-
-        elif self.provider == "langchain":
-            api_key = os.getenv("GROQ_API_KEY")
-            model = self.model_name or "openai/gpt-oss-120b"
-
-            if not api_key:
-                raise HTTPException(400, "GROQ_API_KEY is required")
-
-            from observix.llm.langchain import ChatGroq
-            return ChatGroq(
-                model=model,
-                api_key=api_key,
-                temperature=self.temperature,
-                max_tokens=2500,
-            )
-
-        raise HTTPException(400, f"Unsupported provider: {self.provider}")
 
     # -------------------------
     # DeepEval Interface

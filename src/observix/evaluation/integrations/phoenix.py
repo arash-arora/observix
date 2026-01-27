@@ -9,24 +9,10 @@ from observix import observe
 
 import os
 
+from observix.llm import get_llm
+
 logger = logging.getLogger(__name__)
 
-def _set_env_from_kwargs(kwargs):
-    if kwargs.get("api_key"):
-        # Phoenix OpenAIModel uses OPENAI_API_KEY
-        os.environ["OPENAI_API_KEY"] = kwargs["api_key"]
-        # If user provides Azure keys, mapped similarly
-        if kwargs.get("azure_endpoint"):
-             os.environ["AZURE_API_BASE"] = kwargs["azure_endpoint"]
-             os.environ["AZURE_OPENAI_API_KEY"] = kwargs["api_key"] # Phoenix uses this or OPENAI_API_KEY depending on config
-             # We might need to map specific Phoenix Azure env vars if different
-             # But generic OpenAIModel works with OPENAI_API_KEY
-    
-    # Also handle AZURE specific if passed explicitly
-    if kwargs.get("api_version"):
-        os.environ["AZURE_API_VERSION"] = kwargs["api_version"]
-    if kwargs.get("deployment_name"):
-        os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = kwargs["deployment_name"]
 
 try:
     from phoenix.evals import (
@@ -69,37 +55,31 @@ class PhoenixCustomModel:
         if not PHOENIX_AVAILABLE:
             return None
 
-        _set_env_from_kwargs(self.kwargs)
-
-        if self.provider == "openai":
-            # Direct OpenAI Model
-            return OpenAIModel(model=self.model_name)
+        # Map 'langchain' provider (which evaluation used for Groq) to 'groq' for factory
+        internal_provider = self.provider
+        if self.provider == "langchain":
+            internal_provider = "groq"
         
-        elif self.provider == "azure":
-            # For Azure, we rely on env vars set by _set_env_from_kwargs
-            # Phoenix OpenAIModel picks them up automatically if standard variables are used
-            return OpenAIModel(model=self.model_name)
-            
-        elif self.provider == "langchain":
-            # If leveraging langchain provider, we might have a Runnable passed in 'llm' arg usually,
-            # but if we are just configuring by name/key, we might need to construct a LangChain object trace.
-            # However, for simplicity here matching DeepEval logic:
-            from langchain_groq import ChatGroq
-            # construct minimal langchain object
-            llm = ChatGroq(
-                model=self.model_name or "llama3-8b-8192",
-                api_key=self.kwargs.get("api_key"),
-                temperature=0.0
-            )
+        full_model = f"{internal_provider}/{self.model_name}" if self.model_name else internal_provider
+
+        llm = get_llm(
+            model=full_model,
+            framework="langchain" if self.provider == "langchain" else "openai",
+            **self.kwargs
+        )
+        
+        if self.provider == "langchain":
             return LangChainModel(model=llm)
-            
         else:
-            # Fallback
+            # Phoenix OpenAIModel usually takes the model name and uses its own client logic
+            # but we want our traced client. However, Phoenix OpenAIModel might be strict.
+            # If so, we might need to keep using our wrapped client if possible.
             return OpenAIModel(model=self.model_name)
 
     @property
     def model(self):
         return self._phoenix_model
+
 
 def _wrap_llm_for_phoenix(llm: Any, default_model_name: str = "gpt-4") -> Any:
     """

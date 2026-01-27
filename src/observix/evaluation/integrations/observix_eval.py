@@ -18,6 +18,7 @@ from observix.evaluation.integrations.prompts import (
     WORKFLOW_COMPLETION_PROMPT_TEMPLATE,
     CUSTOM_METRIC_PROMPT_TEMPLATE,
 )
+from observix.llm import get_llm
 from observix.evaluation.integrations.trace_sanitizer import TraceSanitizer
 
 load_dotenv()
@@ -31,74 +32,26 @@ class ObservixEvaluator(Evaluator):
         self.prompt_template = prompt_template
         self.temperature = kwargs.get("temperature", 0.1)
 
-        # Setup environment variables for LLM providers
-        api_key = kwargs.get("api_key")
-        if api_key:
-            if provider == "azure":
-                os.environ["AZURE_OPENAI_KEY"] = api_key
-            elif provider == "langchain":
-                os.environ["GROQ_API_KEY"] = api_key
-            else:
-                os.environ["OPENAI_API_KEY"] = api_key
+        # Map 'langchain' provider (which evaluation used for Groq) to 'groq' for factory
+        internal_provider = provider
+        if provider == "langchain":
+            internal_provider = "groq"
+        
+        full_model = f"{internal_provider}/{model}" if model else internal_provider
 
-        if kwargs.get("azure_endpoint"):
-            os.environ["AZURE_API_BASE"] = kwargs["azure_endpoint"]
-
-        if kwargs.get("api_version"):
-            os.environ["AZURE_API_VERSION"] = kwargs["api_version"]
-
-        if kwargs.get("deployment_name"):
-            os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = kwargs["deployment_name"]
-
-        self.llm = self._get_llm()
+        self.llm = get_llm(
+            model=full_model,
+            temperature=self.temperature,
+            framework="langchain" if provider == "langchain" else "openai",
+            name=self.metric_name,
+            **kwargs
+        )
         self.sanitizer = TraceSanitizer(provider=provider, model=model, **kwargs)
 
     def _get_llm(self):
-        if self.provider == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise HTTPException(400, "OPENAI_API_KEY is required")
+        # Deprecated, maintained for internal use if any
+        return self.llm
 
-            from observix.llm.openai import OpenAI
-            return OpenAI(name=self.metric_name, api_key=api_key)
-
-        elif self.provider == "azure":
-            api_base = os.getenv("AZURE_API_BASE")
-            api_version = os.getenv("AZURE_API_VERSION")
-            api_key = os.getenv("AZURE_OPENAI_KEY")
-            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
-
-            if not all([api_base, api_version, api_key, deployment]):
-                raise HTTPException(
-                    400,
-                    "Azure requires AZURE_API_BASE, AZURE_API_VERSION, "
-                    "AZURE_OPENAI_KEY, AZURE_OPENAI_DEPLOYMENT_NAME",
-                )
-
-            from observix.llm.openai import AzureOpenAI
-            return AzureOpenAI(
-                name=self.metric_name,
-                api_key=api_key,
-                api_version=api_version,
-                azure_endpoint=api_base
-            )
-
-        elif self.provider == "langchain":
-            api_key = os.getenv("GROQ_API_KEY")
-            model = self.model_name or "openai/gpt-oss-120b"
-
-            if not api_key:
-                raise HTTPException(400, "GROQ_API_KEY is required")
-
-            from observix.llm.langchain import ChatGroq
-            return ChatGroq(
-                model=model,
-                api_key=api_key,
-                temperature=self.temperature,
-                max_tokens=2500,
-            )
-
-        raise HTTPException(400, f"Unsupported provider: {self.provider}")
 
     @property
     def name(self) -> str:

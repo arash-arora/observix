@@ -21,6 +21,7 @@ dependencies = [
     "deepeval>=3.7.7",
     "ragas>=0.4.2",
     "arize-phoenix-evals>=2.7.1",
+    "ddgs>=9.10.0",
 ]
 
 [project.optional-dependencies]

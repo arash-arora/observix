@@ -7,7 +7,11 @@ import asyncio
 import datetime as dt
 import functools
 from datetime import datetime
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 from contextvars import ContextVar
 from typing import Any, Callable, Dict, Optional
 

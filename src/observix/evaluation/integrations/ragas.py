@@ -11,6 +11,8 @@ from observix.evaluation.core import Evaluator, EvaluationResult
 from observix.evaluation.trace_utils import extract_eval_params
 
 
+from observix.llm import get_llm
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -46,24 +48,7 @@ class MetricEvaluator(Evaluator):
         self.provider = provider
         self.model = model
         
-        # Set Environment Variables from kwargs
-        if kwargs.get("api_key"):
-            if provider == "azure":
-                os.environ["AZURE_OPENAI_KEY"] = kwargs["api_key"]
-            elif provider == "langchain": # groq
-                 os.environ["GROQ_API_KEY"] = kwargs["api_key"]
-            else:
-                os.environ["OPENAI_API_KEY"] = kwargs["api_key"]
-        
-        if kwargs.get("azure_endpoint"):
-            os.environ["AZURE_API_BASE"] = kwargs["azure_endpoint"]
-        if kwargs.get("api_version"):
-            os.environ["AZURE_API_VERSION"] = kwargs["api_version"]
-        if kwargs.get("deployment_name"):
-            os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = kwargs["deployment_name"]
-        
         # Ragas metrics expect llm to be attached
-
         self.llm = self._get_llm(metric.__name__)
         self.metric = metric(self.llm)
         self.metric.llm = self.llm
@@ -73,52 +58,27 @@ class MetricEvaluator(Evaluator):
         return self.metric.name
 
     def _get_llm(self, metric_name: str):
-        if self.provider == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise HTTPException(400, "OPENAI_API_KEY is required")
+        internal_provider = self.provider
+        if self.provider == "langchain":
+            internal_provider = "openai" # Ragas uses openai client for groq too
+            # Ensure base_url is set for groq if provider is langchain
+            if "base_url" not in self.kwargs and "GROQ_API_KEY" in os.environ:
+                 # This is a bit hacky but consistent with original logic
+                 kwargs = self.llm_kwargs if hasattr(self, "llm_kwargs") else {}
+                 kwargs["base_url"] = "https://api.groq.com/openai/v1"
 
-            from observix.llm.openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=api_key, instrument=False)
-            return llm_factory("openai/gpt-oss-120b", client=client)
+        full_model = f"{internal_provider}/{self.model}" if self.model else internal_provider
+        
+        client = get_llm(
+            model=full_model,
+            framework="openai",
+            name=metric_name,
+            is_async=True,
+            instrument=False, # ragas does its own instrumentation usually, or we don't want to double instrument
+            **kwargs
+        )
+        return llm_factory(self.model or "openai/gpt-oss-120b", client=client)
 
-        elif self.provider == "azure":
-            api_base = os.getenv("AZURE_API_BASE")
-            api_version = os.getenv("AZURE_API_VERSION")
-            api_key = os.getenv("AZURE_OPENAI_KEY")
-            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
-
-            if not all([api_base, api_version, api_key, deployment]):
-                raise HTTPException(
-                    400,
-                    "Azure requires AZURE_API_BASE, AZURE_API_VERSION, "
-                    "AZURE_OPENAI_KEY, AZURE_OPENAI_DEPLOYMENT_NAME",
-                )
-
-            from observix.llm.openai import AsyncAzureOpenAI
-            client = AsyncAzureOpenAI(
-                api_key=api_key,
-                api_version=api_version,
-                azure_endpoint=api_base,
-                instrument=False,
-            )
-            return llm_factory(deployment, client=client)
-
-        elif self.provider == "langchain":
-            api_key = os.getenv("GROQ_API_KEY")
-            if not api_key:
-                raise HTTPException(400, "GROQ_API_KEY is required")
-
-            from observix.llm.openai import AsyncOpenAI
-            client = AsyncOpenAI(
-                api_key=api_key,
-                base_url="https://api.groq.com/openai/v1",
-                instrument=False,
-            )
-            return llm_factory(self.model or "openai/gpt-oss-120b", client=client)
-
-        else:
-            raise HTTPException(400, f"Unsupported provider: {self.provider}")
 
     @observe("RAGAS Evaluation")
     async def evaluate(

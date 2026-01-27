@@ -74,3 +74,4 @@ class Observation(Base):
         back_populates="observations",
         primaryjoin="foreign(Observation.trace_id) == Trace.trace_id"
     )
+
