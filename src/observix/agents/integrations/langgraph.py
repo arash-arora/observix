@@ -121,6 +121,9 @@ class Agent:
         model: str = "openai/gpt-4o",
         framework: str = "langchain",
         temperature: float = 0.0,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_version: Optional[str] = None,
     ):
         """
         Initialize an Agent.
@@ -135,6 +138,9 @@ class Agent:
             model: Name of the LLM model to use.
             framework: LLM framework to use (default "langchain").
             temperature: Sampling temperature for the LLM.
+            api_key: Optional API key for the LLM provider.
+            base_url: Optional base URL for the LLM provider.
+            api_version: Optional API version for the LLM provider.
         """
         self.name = name
         self.description = description
@@ -146,7 +152,17 @@ class Agent:
         # Auto-initialize observability
         init_observability()
 
-        self.llm = get_llm(model=model, framework=framework, temperature=temperature)
+        # Prepare kwargs for get_llm
+        llm_kwargs = {}
+        if api_key:
+            llm_kwargs["api_key"] = api_key
+        if base_url:
+            llm_kwargs["base_url"] = base_url
+            llm_kwargs["azure_endpoint"] = base_url # Map base_url to azure_endpoint for Azure
+        if api_version:
+            llm_kwargs["api_version"] = api_version
+
+        self.llm = get_llm(model=model, framework=framework, temperature=temperature, **llm_kwargs)
 
         self.tool_map: Dict[str, Tool] = {}
         lc_tools = []
