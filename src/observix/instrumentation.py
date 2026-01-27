@@ -402,11 +402,16 @@ def observe(
             # Set current observation ID for children
             token = _current_observation_id.set(obs_id)
             
+            # Resolve functional name
+            actual_name = func_name
+            if is_agent and args and hasattr(args[0], "name"):
+                actual_name = getattr(args[0], "name")
+
             # Start Span
             parent_context = get_current()
             
             with tracer.start_as_current_span(
-                func_name,
+                actual_name,
                 context=parent_context,
                 kind=SpanKind.INTERNAL
             ) as span:
@@ -443,7 +448,7 @@ def observe(
                     obs = Observation(
                         id=obs_id or random.getrandbits(63),
                         parent_observation_id=parent_obs_id, # Link to parent
-                        name=func_name,
+                        name=actual_name,
                         type=obs_type,
                         start_time=int(start_time * 1e9),
                         end_time=int(end_time_val * 1e9), # nanoseconds
@@ -457,9 +462,23 @@ def observe(
                     try:
                          cleaned_args = _clean_obj(args)
                          cleaned_kwargs = _clean_obj(kwargs)
-                         obs.input_text = json.dumps(
-                             {"args": cleaned_args, "kwargs": cleaned_kwargs}
-                         )
+                         
+                         if obs_type == "agent":
+                             # For agents, we typically want to show the state or the input dictionary
+                             # which is usually the second argument in __call__(self, state)
+                             # or the first argument in a plain function
+                             if len(args) > 1:
+                                 input_data = cleaned_args[1]
+                             elif len(args) == 1:
+                                 input_data = cleaned_args[0]
+                             else:
+                                 input_data = cleaned_kwargs
+                             
+                             obs.input_text = json.dumps(input_data)
+                         else:
+                             obs.input_text = json.dumps(
+                                 {"args": cleaned_args, "kwargs": cleaned_kwargs}
+                             )
                     except Exception:
                          obs.input_text = json.dumps(
                              {"args": str(args), "kwargs": str(kwargs)}
@@ -557,11 +576,16 @@ def observe(
                 parent_obs_id = _current_observation_id.get()
                 token = _current_observation_id.set(obs_id)
                 
+                # Resolve functional name
+                actual_name = func_name
+                if is_agent and args and hasattr(args[0], "name"):
+                    actual_name = getattr(args[0], "name")
+
                 # Start Span
                 parent_context = get_current()
                 
                 with tracer.start_as_current_span(
-                    func_name,
+                    actual_name,
                     context=parent_context,
                     kind=SpanKind.INTERNAL
                 ) as span:
@@ -574,6 +598,11 @@ def observe(
                     if attributes:
                         for k, v in attributes.items(): 
                             span.set_attribute(k, v)
+                    
+                    if is_agent:
+                        span.set_attribute("as_agent", True)
+                    if as_tool:
+                        span.set_attribute("as_tool", True)
 
                     # Auto-capture for Runners
                     if as_type and as_type.lower() == "runner":
@@ -600,7 +629,7 @@ def observe(
                         obs = Observation(
                             id=obs_id or random.getrandbits(63),
                             parent_observation_id=parent_obs_id,
-                            name=func_name,
+                            name=actual_name,
                             type=obs_type,
                             start_time=int(start_time * 1e9),
                             end_time=int(end_time_val * 1e9),
@@ -613,9 +642,20 @@ def observe(
                         try:
                              cleaned_args = _clean_obj(args)
                              cleaned_kwargs = _clean_obj(kwargs)
-                             obs.input_text = json.dumps(
-                                 {"args": cleaned_args, "kwargs": cleaned_kwargs}
-                             )
+                             
+                             if obs_type == "agent":
+                                if len(args) > 1:
+                                    input_data = cleaned_args[1]
+                                elif len(args) == 1:
+                                    input_data = cleaned_args[0]
+                                else:
+                                    input_data = cleaned_kwargs
+                                
+                                obs.input_text = json.dumps(input_data)
+                             else:
+                                 obs.input_text = json.dumps(
+                                     {"args": cleaned_args, "kwargs": cleaned_kwargs}
+                                 )
                         except Exception:
                              obs.input_text = json.dumps(
                                  {"args": str(args), "kwargs": str(kwargs)}

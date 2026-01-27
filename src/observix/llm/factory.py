@@ -29,27 +29,32 @@ def get_llm(
 def _get_langchain_llm(provider: str, model_name: str, temperature: float, **kwargs):
     if provider == "openai":
         from observix.llm.langchain import ChatOpenAI
+        api_key = kwargs.pop("api_key", os.getenv("OPENAI_API_KEY"))
         return ChatOpenAI(
             model=model_name,
             temperature=temperature,
-            api_key=os.getenv("OPENAI_API_KEY"),
+            api_key=api_key,
             **kwargs,
         )
     elif provider == "groq":
         from observix.llm.langchain import ChatGroq
+        api_key = kwargs.pop("api_key", os.getenv("GROQ_API_KEY"))
         return ChatGroq(
             model=model_name,
             temperature=temperature,
-            api_key=os.getenv("GROQ_API_KEY"),
+            api_key=api_key,
             **kwargs,
         )
     elif provider == "azure":
         from observix.llm.langchain import AzureChatOpenAI
+        api_key = kwargs.pop("api_key", os.getenv("AZURE_OPENAI_API_KEY"))
+        azure_endpoint = kwargs.pop("azure_endpoint", os.getenv("AZURE_OPENAI_ENDPOINT"))
+        api_version = kwargs.pop("api_version", os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"))
         return AzureChatOpenAI(
             azure_deployment=model_name,
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
             temperature=temperature,
             **kwargs,
         )
@@ -60,10 +65,11 @@ def _get_langchain_llm(provider: str, model_name: str, temperature: float, **kwa
             raise ImportError(
                 "To use Gemini models, install: pip install langchain-google-genai"
             )
+        google_api_key = kwargs.pop("google_api_key", os.getenv("GOOGLE_API_KEY"))
         return ChatGoogleGenerativeAI(
             model=model_name,
             temperature=temperature,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            google_api_key=google_api_key,
             **kwargs,
         )
     else:

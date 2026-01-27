@@ -1,175 +1,144 @@
-import os
 import time
+from typing import TypedDict
 from dotenv import load_dotenv
-from typing import Annotated, Literal, TypedDict
+from observix.agents import Agent, Tool, Graph, END
+from observix.agents.utils.logging import setup_logging
+from observix import init_observability, observe, capture_context
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
-
-from observix.llm.langchain import ChatGroq
-from observix import observe, capture_context
-
-# Initialize automatically from .env
-# Ensure GROQ_API_KEY is in .env
+# Load environment variables
 load_dotenv()
-if not os.getenv("GROQ_API_KEY"):
-    raise ValueError("GROQ_API_KEY not found in env. Please set it in .env or environment variables.")
 
-llm = ChatGroq(model="llama-3.3-70b-versatile")
+# Initialize logging
+setup_logging()
 
-# --- Tools (Dummy) ---
+# --- State ---
 
-@observe(name="google_search", as_tool=True)
-def google_search(query: str):
+class AgentState(TypedDict):
+    input: str
+    plan: str
+    research: str
+    draft: str
+    polished_content: str
+    qc_feedback: str
+
+# --- Tools ---
+
+def google_search_fn(query: str):
     """Performs a Google search to retrieve latest trends and information."""
     print(f"  [Tool] Searching Google for: {query}")
     capture_context("Kubernetes is an open source container orchestration engine for automating deployment, scaling, and management of containerized applications.")
     time.sleep(0.5)
     return f"Search results for {query}: [Trend A, Trend B, Factor C]"
 
-@observe(name="cms_upload", as_tool=True)
-def cms_upload(content: str):
+def cms_upload_fn(content: str):
     """Uploads the finalized content to the Content Management System."""
     print("  [Tool] Uploading content to CMS...")
     time.sleep(0.5)
     return "Upload Successful (ID: 12345)"
 
+google_search_tool = Tool(
+    fn=google_search_fn, 
+    name="google_search", 
+    description="Performs a Google search to retrieve latest trends and information."
+)
+cms_upload_tool = Tool(
+    fn=cms_upload_fn, 
+    name="cms_upload", 
+    description="Uploads the finalized content to the Content Management System."
+)
+
 # --- Agents ---
 
-class AgentState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-    next: str
+planner_agent = Agent(
+    name="Planner",
+    description="Responsible for creating the initial content outline.",
+    input_key="input",
+    output_key="plan",
+    instructions="You are a Content Planner. Create a brief outline based on the user query.",
+    model="groq/openai/gpt-oss-120b"
+)
 
-# 1. Planner
-@observe(name="planner_agent", as_agent=True)
-def planner_node(state: AgentState):
-    """Responsible for creating the initial content outline."""
-    print("\n--- Planner Agent ---")
-    messages = state["messages"]
-    # Simulate LLM call with tracing? Ideally ChatGroq itself should be patched
-    # or we wrap the invoke. For this demo, we just use the LLM and valid result.
-    # We can wrap LLM calls if we want detailed LLM obs, but user asked for
-    # "Agents" and "tools". Since Agents are nodes here, decorated.
-    
-    response = llm.invoke([
-        SystemMessage(content="You are a Content Planner. Create a brief outline."),
-        *messages
-    ])
-    return {"messages": [response]}
+researcher_agent = Agent(
+    name="Researcher",
+    description="Conducts research on the given topic using search tools.",
+    input_key="plan",
+    output_key="research",
+    instructions="You are a Researcher. Use the google_search tool to analyze trends based on the outline and provide data.",
+    tools=[google_search_tool],
+    model="groq/openai/gpt-oss-120b"
+)
 
-# 2. Researcher
-@observe(name="researcher_agent", as_agent=True)
-def researcher_node(state: AgentState):
-    """Conducts research on the given topic using search tools."""
-    print("\n--- Researcher Agent ---")
-    last_message = state["messages"][-1]
-    # Use tool
-    search_data = google_search("latest trends in " + last_message.content[:20])
-    
-    response = llm.invoke([
-        SystemMessage(
-            content=f"You are a Researcher. Analyze these trends: {search_data}"
-        ),
-        last_message
-    ])
-    return {"messages": [response]}
+writer_agent = Agent(
+    name="Writer",
+    description="Drafts the blog post content based on research findings.",
+    input_key="research",
+    output_key="draft",
+    instructions="You are a Writer. Write a short blog post based on the research findings provided.",
+    model="groq/openai/gpt-oss-120b"
+)
 
-# 3. Writer
-@observe(name="writer_agent", as_agent=True)
-def writer_node(state: AgentState):
-    """Drafts the blog post content based on research findings."""
-    print("\n--- Writer Agent ---")
-    last_message = state["messages"][-1]
-    
-    response = llm.invoke([
-        SystemMessage(
-            content="You are a Writer. Write a short blog post based on the research."
-        ),
-        last_message
-    ])
-    return {"messages": [response], "next": "editor"}
+editor_agent = Agent(
+    name="Editor",
+    description="Reviews and polishes the content for better flow and grammar.",
+    input_key="draft",
+    output_key="polished_content",
+    instructions="You are an Editor. Review and polish the content provided by the writer.",
+    model="groq/openai/gpt-oss-120b"
+)
 
-# 4. Editor
-@observe(name="editor_agent", as_agent=True)
-def editor_node(state: AgentState):
-    """Reviews and polishes the content for better flow and grammar."""
-    print("\n--- Editor Agent ---")
-    last_message = state["messages"][-1]
-    
-    response = llm.invoke([
-        SystemMessage(content="You are an Editor. Review and polish the content."),
-        last_message
-    ])
-    return {"messages": [response]}
+qc_agent = Agent(
+    name="QC",
+    description="Performs quality control checks and compliance verification.",
+    input_key="polished_content",
+    output_key="qc_feedback",
+    instructions="You are QC. Check for compliance. Respond 'APPROVED' if good, otherwise 'REJECTED' with a reason.",
+    tools=[cms_upload_tool],
+    model="groq/openai/gpt-oss-120b"
+)
 
-# 5. QC
-@observe(name="qc_agent", as_agent=True)
-def qc_node(state: AgentState):
-    """Performs quality control checks and compliance verification."""
-    print("\n--- QC Agent ---")
-    last_message = state["messages"][-1]
-    
-    # Simulate failed QC first? No, let's keep it simple.
-    response = llm.invoke([
-        SystemMessage(
-            content="You are QC. Check for compliance. Respond 'APPROVED' if good."
-        ),
-        last_message
-    ])
-    
-    if "APPROVED" in response.content.upper():
-        # Use tool
-        cms_upload(last_message.content)
-        return {"messages": [response]}
-    else:
-        return {"messages": [response]}
+# --- Router Functions ---
 
-def qc_router(state: AgentState) -> Literal["APPROVED", "REJECTED"]:
-    messages = state["messages"]
-    last_message = messages[-1]
-    if "APPROVED" in last_message.content.upper():
-        return "APPROVED"
-    return "REJECTED"
+def qc_router(state: AgentState) -> str:
+    feedback = state.get("qc_feedback", "").upper()
+    if "APPROVED" in feedback:
+        return "approved"
+    return "rejected"
 
 # --- Graph ---
 
-workflow = StateGraph(AgentState)
+graph = (
+    Graph(AgentState)
+    .add(planner_agent)
+    .add(researcher_agent)
+    .add(writer_agent)
+    .add(editor_agent)
+    .add(qc_agent)
+    .when("QC", qc_router)
+    .then({
+        "approved": END,
+        "rejected": "Writer"
+    })
+)
 
-workflow.add_node("planner", planner_node)
-workflow.add_node("researcher", researcher_node)
-workflow.add_node("writer", writer_node)
-workflow.add_node("editor", editor_node)
-workflow.add_node("qc", qc_node)
+# --- Runner ---
 
-workflow.add_edge(START, "planner")
-workflow.add_edge("planner", "researcher")
-workflow.add_edge("researcher", "writer")
-workflow.add_edge("writer", "editor")
-workflow.add_edge("editor", "qc")
-workflow.add_conditional_edges("qc", qc_router, {
-    "APPROVED": END,
-    "REJECTED": "writer"
-})
-
-app = workflow.compile()
-
-@observe(name="run_media_agency", as_type="Runner")
+@observe(name="run_media_agency")
 def run_agency():
-
-    print("Starting Media Agency Workflow...")
-    final_state = app.invoke(
-        {"messages": [HumanMessage(content="Create a blog post about AI Agents.")]}
-    )
+    print("Starting Media Agency Workflow (Refactored)...")
+    
+    input_query = "Create a blog post about AI Agents."
+    result = graph.run(input_query)
+    
     print("\nWorkflow Finished.")
-    print(final_state["messages"][-1].content)
+    print("Final Polished Content:")
+    print(result.get("polished_content", "No content generated."))
 
 if __name__ == "__main__":
     try:
         run_agency()
         # Wait for export
-        import time
         time.sleep(5)
-    except Exception:
+    except Exception as e:
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()

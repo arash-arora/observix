@@ -18,7 +18,7 @@ from observix.llm import get_llm
 
 from observix.agents.utils.logging import get_logger
 from observix.agents.exceptions import ConfigurationError, WorkflowError
-from observix.instrumentation import observe, capture_candidate_agents, capture_tools
+from observix.instrumentation import observe, capture_candidate_agents, capture_tools, init_observability
 
 
 load_dotenv()
@@ -48,8 +48,18 @@ class Tool:
             self._tool = fn
             self.name = fn.name
             self.description = fn.description
+            
+            # Wrap invoke for observability
+            original_invoke = fn.invoke
+            fn.invoke = observe(name=self.name, as_tool=True)(original_invoke)
+            
             self.fn = fn.invoke
             self.async_fn = getattr(fn, "ainvoke", None)
+            if self.async_fn:
+                 original_ainvoke = fn.ainvoke
+                 fn.ainvoke = observe(name=self.name, as_tool=True)(original_ainvoke)
+                 self.async_fn = fn.ainvoke
+                 
             self.is_langchain_tool = True
 
         elif callable(fn):
@@ -60,48 +70,28 @@ class Tool:
             self.description = description
             self.is_langchain_tool = False
 
+            # Instrument function immediately
+            instrumented_fn = observe(name=name, as_tool=True)(fn)
+            
             if inspect.iscoroutinefunction(fn):
                 self.fn = None
-                self.async_fn = fn
+                self.async_fn = instrumented_fn
             else:
-                self.fn = fn
+                self.fn = instrumented_fn
                 self.async_fn = None
 
             self._tool = StructuredTool.from_function(
-                func=fn,
-                coroutine=fn if inspect.iscoroutinefunction(fn) else None,
+                func=self.fn if self.fn else self.async_fn, # Use instrumented wrapper
+                coroutine=self.async_fn,
                 name=name,
                 description=description,
             )
         else:
             raise ConfigurationError("Tool fn must be callable or BaseTool")
 
-        # Instrument the tool call
-        self._instrument_tool()
-
     def _instrument_tool(self):
-        original_fn = self.fn
-        def instrumented_fn(*args, **kwargs):
-            return original_fn(*args, **kwargs)
-        
-        instrumented_fn.__doc__ = self.description
-        instrumented_fn = observe(name=self.name, as_tool=True)(instrumented_fn)
-
-
-        
-        if self.fn:
-            self.fn = instrumented_fn
-
-        if self.async_fn:
-            original_async_fn = self.async_fn
-            async def instrumented_async_fn(*args, **kwargs):
-                return await original_async_fn(*args, **kwargs)
-            
-            instrumented_async_fn.__doc__ = self.description
-            instrumented_async_fn = observe(name=self.name, as_tool=True)(instrumented_async_fn)
-
-
-            self.async_fn = instrumented_async_fn
+        # Deprecated: Logic moved to __init__
+        pass
 
     def as_langchain_tool(self) -> BaseTool:
         """Returns the underlying LangChain tool."""
@@ -152,6 +142,9 @@ class Agent:
         self.input_key = input_key
         self.output_key = output_key
         self.tools = tools or []
+
+        # Auto-initialize observability
+        init_observability()
 
         self.llm = get_llm(model=model, framework=framework, temperature=temperature)
 
@@ -300,6 +293,9 @@ class Graph:
         self.name = name or f"graph_{id(self)}"
         self.thread_id = thread_id
         self.max_retries = max_retries
+
+        # Auto-initialize observability
+        init_observability()
 
         self.nodes: List[Any] = []
         self.edges: List[tuple[str, str]] = []
