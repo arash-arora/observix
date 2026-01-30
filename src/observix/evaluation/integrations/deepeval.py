@@ -19,7 +19,9 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Disable DeepEval telemetry (prevents OTEL conflicts)
-os.environ.setdefault("DEEPEVAL_TELEMETRY", "false")
+os.environ["DEEPEVAL_TELEMETRY"] = "no"
+os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] = "true"
+os.environ["OPENTELEMETRY_PYTHON_DISABLED_INSTRUMENTATIONS"] = "deepeval"
 
 # -------------------------
 # Optional DeepEval Imports
@@ -107,15 +109,29 @@ class CustomModel(DeepEvalBaseLLM):
                     "AZURE_OPENAI_KEY, AZURE_OPENAI_DEPLOYMENT_NAME",
                 )
 
-            from observix.llm.openai import AzureOpenAI
-
-            return AzureOpenAI(
-                name=metric_name,
-                api_key=api_key,
-                api_version=api_version,
-                azure_endpoint=api_base,
-                instrument=instrument,
+            debug_msg = (
+                f"[DeepEval] Provider: {self.provider}, Instrument: {instrument}\n"
             )
+            try:
+                from observix.llm.openai import AzureOpenAI
+
+                client = AzureOpenAI(
+                    name=metric_name,
+                    api_key=api_key,
+                    api_version=api_version,
+                    azure_endpoint=api_base,
+                    instrument=instrument,
+                )
+                create_method = client.chat.completions.create
+                method_name = getattr(create_method, "__name__", str(create_method))
+                debug_msg += f"[DeepEval] Azure Client created. Method: {method_name}\n"
+            except Exception as e:
+                debug_msg += f"[DeepEval] Error creating client: {e}\n"
+
+            with open("debug_trace.log", "a") as f:
+                f.write(debug_msg)
+
+            return client
 
         elif self.provider == "langchain":
             api_key = os.getenv("GROQ_API_KEY")
