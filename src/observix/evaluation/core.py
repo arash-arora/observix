@@ -3,74 +3,88 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
+
 class EvaluationResult(BaseModel):
     """
     Standardized result from an evaluation run.
     """
+
     metric_name: str
     score: float
     passed: Optional[bool] = None
     reason: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+
 class Evaluator(ABC):
     """
     Abstract base class for all evaluators.
     """
-    
+
     @property
     @abstractmethod
     def name(self) -> str:
         pass
 
     def evaluate(
-        self, 
-        output: str = "", 
-        expected: Optional[str] = None, 
+        self,
+        output: str = "",
+        expected: Optional[str] = None,
         context: Optional[List[str]] = None,
         input_query: Optional[str] = None,
-        **kwargs
+        trace_enabled: bool = True,
+        **kwargs,
     ) -> EvaluationResult:
         """
         Run the evaluation with automatic tracing.
         """
+        if not trace_enabled:
+            return self._evaluate(
+                output=output,
+                expected=expected,
+                context=context,
+                input_query=input_query,
+                **kwargs,
+            )
+
         from opentelemetry import trace
-        
+
         tracer = trace.get_tracer("observix")
-        
+
         # Start a span for this evaluation
         with tracer.start_as_current_span(
-            f"evaluation_{self.name}",
-            kind=trace.SpanKind.CLIENT
+            f"{self.name}", kind=trace.SpanKind.CLIENT
         ) as span:
-            span.set_attribute("is_evaluation", True)
-            
+            span.set_attribute("is_eval", True)
+
             return self._evaluate(
-                output=output, 
-                expected=expected, 
-                context=context, 
-                input_query=input_query, 
-                **kwargs
+                output=output,
+                expected=expected,
+                context=context,
+                input_query=input_query,
+                **kwargs,
             )
 
     @abstractmethod
     def _evaluate(
-        self, 
-        output: str = "", 
-        expected: Optional[str] = None, 
+        self,
+        output: str = "",
+        expected: Optional[str] = None,
         context: Optional[List[str]] = None,
         input_query: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> EvaluationResult:
         """
         Internal evaluation logic to be implemented by subclasses.
         """
         pass
 
+
 class EvaluationSuite:
     """
     A suite to run multiple evaluators on the same dataset item.
     """
+
     def __init__(self, evaluators: List[Evaluator]):
         self.evaluators = evaluators
 
@@ -81,7 +95,7 @@ class EvaluationSuite:
         context: Optional[List[str]] = None,
         input_query: Optional[str] = None,
         delay: float = 0.0,
-        **kwargs
+        **kwargs,
     ) -> List[EvaluationResult]:
         results = []
         for evaluator in self.evaluators:
@@ -93,16 +107,18 @@ class EvaluationSuite:
                     expected=expected,
                     context=context,
                     input_query=input_query,
-                    **kwargs
+                    **kwargs,
                 )
                 results.append(result)
             except Exception as e:
                 # Capture failure as a failed result usually? or just log?
                 # We return a failed result with score 0
-                results.append(EvaluationResult(
-                    metric_name=evaluator.name,
-                    score=0.0,
-                    passed=False,
-                    reason=f"Error during evaluation: {str(e)}"
-                ))
+                results.append(
+                    EvaluationResult(
+                        metric_name=evaluator.name,
+                        score=0.0,
+                        passed=False,
+                        reason=f"Error during evaluation: {str(e)}",
+                    )
+                )
         return results

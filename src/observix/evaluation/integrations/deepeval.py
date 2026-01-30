@@ -40,6 +40,7 @@ except ImportError:
 # Custom DeepEval LLM
 # =========================
 
+
 class CustomModel(DeepEvalBaseLLM):
     def __init__(
         self,
@@ -47,12 +48,13 @@ class CustomModel(DeepEvalBaseLLM):
         provider: str,
         model: Optional[str] = None,
         temperature: float = 0.0,
+        instrument: bool = True,
         **llm_kwargs,
     ):
         self.provider = provider
         self.model_name = model
         self.temperature = temperature
-        metric_name = "DeepEval" + metric_name
+        metric_name = metric_name
 
         # -------------------------
         # Environment variables
@@ -76,20 +78,21 @@ class CustomModel(DeepEvalBaseLLM):
         if llm_kwargs.get("deployment_name"):
             os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = llm_kwargs["deployment_name"]
 
-        self.llm = self._get_llm(metric_name)
+        self.llm = self._get_llm(metric_name, instrument=instrument)
 
     # -------------------------
     # LLM Factory
     # -------------------------
 
-    def _get_llm(self, metric_name: str):
+    def _get_llm(self, metric_name: str, instrument: bool = True):
         if self.provider == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise HTTPException(400, "OPENAI_API_KEY is required")
 
             from observix.llm.openai import OpenAI
-            return OpenAI(name=metric_name, api_key=api_key)
+
+            return OpenAI(name=metric_name, api_key=api_key, instrument=instrument)
 
         elif self.provider == "azure":
             api_base = os.getenv("AZURE_API_BASE")
@@ -105,11 +108,13 @@ class CustomModel(DeepEvalBaseLLM):
                 )
 
             from observix.llm.openai import AzureOpenAI
+
             return AzureOpenAI(
                 name=metric_name,
                 api_key=api_key,
                 api_version=api_version,
-                azure_endpoint=api_base
+                azure_endpoint=api_base,
+                instrument=instrument,
             )
 
         elif self.provider == "langchain":
@@ -120,6 +125,10 @@ class CustomModel(DeepEvalBaseLLM):
                 raise HTTPException(400, "GROQ_API_KEY is required")
 
             from observix.llm.langchain import ChatGroq
+
+            # ChatGroq might not support instrument flag yet, but we can add later if needed
+            # For now passing it implicitly via @observe decorator control if we could, but decorator is static.
+            # We might need to make ChatGroq dynamic too. For now let's focus on OpenAI/Azure.
             return ChatGroq(
                 model=model,
                 api_key=api_key,
@@ -167,12 +176,14 @@ class CustomModel(DeepEvalBaseLLM):
 # DeepEval Evaluator Base
 # =========================
 
+
 class MetricEvaluator(Evaluator):
     def __init__(
         self,
-        metric_cls: Type[BaseMetric], # type: ignore
+        metric_cls: Type[BaseMetric],  # type: ignore
         provider: str,
         model: Optional[str] = None,
+        instrument: bool = True,
         **metric_kwargs,
     ):
         if not DEEPEVAL_AVAILABLE:
@@ -183,13 +194,16 @@ class MetricEvaluator(Evaluator):
         # Separate LLM kwargs from metric kwargs
         llm_keys = {"api_key", "azure_endpoint", "api_version", "deployment_name"}
         llm_kwargs = {k: v for k, v in metric_kwargs.items() if k in llm_keys}
-        metric_only_kwargs = {k: v for k, v in metric_kwargs.items() if k not in llm_keys}
+        metric_only_kwargs = {
+            k: v for k, v in metric_kwargs.items() if k not in llm_keys
+        }
 
         self.llm = CustomModel(
             metric_name=metric_cls.__name__,
             provider=provider,
             model=model,
             temperature=0.1,
+            instrument=instrument,
             **llm_kwargs,
         )
 
@@ -235,6 +249,7 @@ class MetricEvaluator(Evaluator):
 
             # Attach OTEL trace ID if present
             from opentelemetry import trace as otel_trace
+
             current_span = otel_trace.get_current_span()
             trace_id_hex = None
 
@@ -262,61 +277,72 @@ class MetricEvaluator(Evaluator):
 # Metric-Specific Evaluators
 # =========================
 
+
 class AnswerRelevancyEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import AnswerRelevancyMetric
+
         super().__init__(AnswerRelevancyMetric, provider, model, **kwargs)
 
 
 class FaithfulnessEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import FaithfulnessMetric
+
         super().__init__(FaithfulnessMetric, provider, model, **kwargs)
 
 
 class ContextualPrecisionEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ContextualPrecisionMetric
+
         super().__init__(ContextualPrecisionMetric, provider, model, **kwargs)
 
 
 class ContextualRecallEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ContextualRecallMetric
+
         super().__init__(ContextualRecallMetric, provider, model, **kwargs)
 
 
 class ContextualRelevancyEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ContextualRelevancyMetric
+
         super().__init__(ContextualRelevancyMetric, provider, model, **kwargs)
 
 
 class HallucinationEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import HallucinationMetric
+
         super().__init__(HallucinationMetric, provider, model, **kwargs)
 
 
 class TaskCompletionEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import TaskCompletionMetric
+
         super().__init__(TaskCompletionMetric, provider, model, **kwargs)
 
 
 class ToolCorrectnessEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ToolCorrectnessMetric
+
         super().__init__(ToolCorrectnessMetric, provider, model, **kwargs)
-        
+
 
 class ToxicityEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import ToxicityMetric
+
         super().__init__(ToxicityMetric, provider, model, **kwargs)
 
 
 class BiasEvaluator(MetricEvaluator):
     def __init__(self, provider: str, model: str, **kwargs):
         from deepeval.metrics import BiasMetric
+
         super().__init__(BiasMetric, provider, model, **kwargs)
