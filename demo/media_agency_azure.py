@@ -1,8 +1,15 @@
+import json
 import os
 import time
 from typing import Annotated, Literal, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -41,6 +48,10 @@ def invoke_native(messages: list[BaseMessage]) -> AIMessage:
             openai_messages.append({"role": "user", "content": m.content})
         elif isinstance(m, AIMessage):
             openai_messages.append({"role": "assistant", "content": m.content})
+        elif isinstance(m, ToolMessage):
+            openai_messages.append(
+                {"role": "tool", "tool_call_id": m.tool_call_id, "content": m.content}
+            )
         else:
             openai_messages.append({"role": "user", "content": str(m.content)})
 
@@ -94,22 +105,104 @@ def planner_node(state: AgentState):
 
 
 # 2. Researcher
+# 2. Researcher
 @observe(name="researcher_agent", as_agent=True)
 def researcher_node(state: AgentState):
     print("\n--- Researcher Agent ---")
     last_message = state["messages"][-1]
-    # Use tool
-    search_data = google_search("latest trends in " + last_message.content[:20])
 
-    response = invoke_native(
-        [
-            SystemMessage(
-                content=f"You are a Researcher. Analyze these trends: {search_data}"
-            ),
-            last_message,
-        ]
+    # Define tool schema
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "google_search",
+                "description": "Performs a Google search to retrieve latest trends and information.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query string.",
+                        }
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    # Map for execution
+    tools_map = {"google_search": google_search}
+
+    # Prepare messages
+    # Note: We duplicate logic from invoke_native here to include system prompt + generic conversion
+    # ideally we refactor conversion logic, but keeping it inline for safety in this node
+
+    openai_messages = []
+    # Add System Prompt
+    openai_messages.append(
+        {
+            "role": "system",
+            "content": "You are a Researcher. Decide what to search to analyze trends. Use google_search tool when needed.",
+        }
     )
-    return {"messages": [response]}
+
+    # Convert history
+    # Note: State messages might be effectively handled by just taking the last one or full history if needed.
+    # The original code took `state["messages"][-1]` mixed with system. Let's send the last message as User/Content.
+    # Wait, the original code constructed list: [SystemMessage, last_message].
+    # So we do the same.
+
+    openai_messages.append({"role": "user", "content": last_message.content})
+
+    # Call Azure OpenAI with tools
+    response = client.chat.completions.create(
+        model=deployment_name, messages=openai_messages, tools=tools, tool_choice="auto"
+    )
+
+    choice = response.choices[0]
+    message = choice.message
+
+    output_messages = []
+
+    # Create valid AIMessage from response (including tool calls if any)
+    # LangChain AIMessage supports tool_calls arg, but let's stick to standard if possible or just use content.
+    # If we have tool calls, content might be None.
+
+    ai_content = message.content or ""
+    # We need to act as if we returned an AIMessage with tool calls so LangGraph/Next nodes understand?
+    # Or just execute internal loop and return final result?
+    # The previous media_agency returned [AIMessage, ToolMessage, ToolMessage].
+
+    # For now, let's just return the AIMessage (with content) and ToolMessages.
+    # Note: standard LangChain AIMessage doesn't easily convert from OpenAI object.
+    # We will just synthesize a simple AIMessage.
+
+    output_messages.append(AIMessage(content=ai_content))
+
+    if message.tool_calls:
+        for tool_call in message.tool_calls:
+            name = tool_call.function.name
+            args_str = tool_call.function.arguments
+            call_id = tool_call.id
+
+            if name in tools_map:
+                try:
+                    args = json.loads(args_str)
+                    print(f"  [Researcher] Executing tool: {name}")
+                    # Direct execution -> Context propagated automatically
+                    result = tools_map[name](**args)
+                except Exception as e:
+                    result = f"Error: {e}"
+            else:
+                result = f"Error: Tool {name} not found."
+
+            output_messages.append(
+                ToolMessage(content=str(result), tool_call_id=call_id, name=name)
+            )
+
+    return {"messages": output_messages}
 
 
 # 3. Writer
