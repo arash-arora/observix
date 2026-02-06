@@ -467,192 +467,211 @@ def observe(
 
         tracer = trace.get_tracer(_TRACER_NAME)
 
-        @functools.wraps(func)
-        def inner(*args, **kwargs):
-            # Capture start time properties
-            start_time = time.time()
+        def create_observation_record(
+            span,
+            args,
+            kwargs,
+            start_time,
+            obs_id,
+            parent_obs_id,
+            result=None,
+            exc=None,
+        ):
+            exporter = exporter_module.observation_exporter_instance
+            if not record_observation or exporter is None:
+                return
 
-            obs_id = random.getrandbits(63)
-            # Get parent observation ID from context
-            parent_obs_id = _current_observation_id.get()
+            # Determine type
+            obs_type = "function"
+            if is_agent:
+                obs_type = "agent"
+            elif is_tool:
+                obs_type = "tool"
 
-            # Set current observation ID for children
-            token = _current_observation_id.set(obs_id)
+            end_time_val = time.time()
 
-            # Start Span
-            parent_context = get_current()
+            obs = Observation(
+                id=obs_id or random.getrandbits(63),
+                parent_observation_id=parent_obs_id,  # Link to parent
+                name=func_name,
+                type=obs_type,
+                start_time=int(start_time * 1e9),
+                end_time=int(end_time_val * 1e9),  # nanoseconds
+                metadata_json=_prepare_metadata(span.attributes),
+                observation_type="decorator",
+                trace_id=f"{span.get_span_context().trace_id:032x}",
+                created_at=datetime.utcnow(),
+            )
 
-            with tracer.start_as_current_span(
-                func_name, context=parent_context, kind=SpanKind.INTERNAL
-            ) as span:
-                span.set_attribute("observation_id", str(obs_id))
-                if parent_obs_id:
-                    span.set_attribute("parent_observation_id", str(parent_obs_id))
+            # Careful with JSON dumping arbitrary objects
+            try:
+                cleaned_args = _clean_obj(args)
+                cleaned_kwargs = _clean_obj(kwargs)
+                obs.input_text = json.dumps(
+                    {"args": cleaned_args, "kwargs": cleaned_kwargs}
+                )
+            except Exception:
+                obs.input_text = json.dumps({"args": str(args), "kwargs": str(kwargs)})
 
-                if attributes:
-                    for k, v in attributes.items():
-                        span.set_attribute(k, v)
-
-                # Auto-capture for Runners
-                if as_type and as_type.lower() == "runner":
-                    capture_candidate_agents()
-                    capture_tools()
-
-                def create_observation(
-                    span,
-                    args,
-                    kwargs,
-                    result=None,
-                    exc=None,
-                    obs_id=None,
-                    parent_obs_id=None,
-                ):
-                    exporter = exporter_module.observation_exporter_instance
-                    if not record_observation or exporter is None:
-                        return
-
-                    # Determine type
-                    obs_type = "function"
-                    if as_agent or (as_type and as_type.lower() == "agent"):
-                        obs_type = "agent"
-                    elif as_tool or (as_type and as_type.lower() == "tool"):
-                        obs_type = "tool"
-
-                    end_time_val = time.time()
-
-                    obs = Observation(
-                        id=obs_id or random.getrandbits(63),
-                        parent_observation_id=parent_obs_id,  # Link to parent
-                        name=func_name,
-                        type=obs_type,
-                        start_time=int(start_time * 1e9),
-                        end_time=int(end_time_val * 1e9),  # nanoseconds
-                        metadata_json=_prepare_metadata(span.attributes),
-                        observation_type="decorator",
-                        trace_id=f"{span.get_span_context().trace_id:032x}",
-                        created_at=datetime.utcnow(),
-                    )
-
-                    # Careful with JSON dumping arbitrary objects
-                    try:
-                        cleaned_args = _clean_obj(args)
-                        cleaned_kwargs = _clean_obj(kwargs)
-                        obs.input_text = json.dumps(
-                            {"args": cleaned_args, "kwargs": cleaned_kwargs}
-                        )
-                    except Exception:
-                        obs.input_text = json.dumps(
-                            {"args": str(args), "kwargs": str(kwargs)}
-                        )
-
-                    if result is not None:
-                        try:
-                            # Try dumping result
-                            cleaned_result = _clean_obj(result)
-                            obs.output_text = json.dumps(cleaned_result)
-                        except Exception:
-                            obs.output_text = str(result)
-                    else:
-                        if exc:
-                            obs.output_text = f"Error: {str(exc)}"
-                        else:
-                            obs.output_text = ""
-
-                    if result is not None:
-                        obs.token_usage = _extract_token_usage(result)
-                        obs.model = _extract_model_name(kwargs, result)
-                        obs.total_cost = _extract_cost(
-                            result, obs.model, obs.token_usage
-                        )
-
-                        tool_decisions = _extract_tool_calls(result)
-                        if tool_decisions:
-                            try:
-                                current_meta = (
-                                    json.loads(obs.metadata_json)
-                                    if obs.metadata_json
-                                    else {}
-                                )
-                            except:
-                                current_meta = {}
-
-                            current_meta["tool_calls"] = tool_decisions
-                            obs.metadata_json = json.dumps(current_meta, default=str)
-                    else:
-                        obs.token_usage = None
-                        obs.model = _extract_model_name(kwargs, None)
-                        obs.total_cost = None
-
-                    obs.model_parameters = None  # Could extract from kwargs if needed
-
-                    if exc:
-                        obs.error = str(exc)
-
-                    try:
-                        exporter.enqueue(obs)
-                    except Exception as obs_exc:
-                        # do not break tracing if observation fails
-                        print(f"[ObsWarning] Failed to create observation: {obs_exc}")
-
-                if asyncio.iscoroutinefunction(func):
-                    # We need to define an async wrapper to await the function
-                    async def async_inner_wrapper(*args, **kwargs):
-                        try:
-                            result = await func(*args, **kwargs)
-                            create_observation(
-                                span,
-                                args,
-                                kwargs,
-                                result=result,
-                                obs_id=obs_id,
-                                parent_obs_id=parent_obs_id,
-                            )
-                            return result
-                        except Exception as exc:
-                            span.record_exception(exc)
-                            span.set_status(Status(StatusCode.ERROR))
-                            create_observation(
-                                span,
-                                args,
-                                kwargs,
-                                exc=exc,
-                                obs_id=obs_id,
-                                parent_obs_id=parent_obs_id,
-                            )
-                            raise
-                        finally:
-                            span.set_attribute(
-                                "duration_ms", (time.time() - start_time) * 1000
-                            )
-                            _current_observation_id.reset(token)
-
-                    return asyncio.run(async_inner_wrapper(*args, **kwargs))
+            if result is not None:
+                try:
+                    # Try dumping result
+                    cleaned_result = _clean_obj(result)
+                    obs.output_text = json.dumps(cleaned_result)
+                except Exception:
+                    obs.output_text = str(result)
+            else:
+                if exc:
+                    obs.output_text = f"Error: {str(exc)}"
                 else:
+                    obs.output_text = ""
+
+            if result is not None:
+                obs.token_usage = _extract_token_usage(result)
+                obs.model = _extract_model_name(kwargs, result)
+                obs.total_cost = _extract_cost(result, obs.model, obs.token_usage)
+
+                tool_decisions = _extract_tool_calls(result)
+                if tool_decisions:
                     try:
-                        result = func(*args, **kwargs)
-                        create_observation(
+                        current_meta = (
+                            json.loads(obs.metadata_json) if obs.metadata_json else {}
+                        )
+                    except:
+                        current_meta = {}
+
+                    current_meta["tool_calls"] = tool_decisions
+                    obs.metadata_json = json.dumps(current_meta, default=str)
+            else:
+                obs.token_usage = None
+                obs.model = _extract_model_name(kwargs, None)
+                obs.total_cost = None
+
+            obs.model_parameters = None  # Could extract from kwargs if needed
+
+            if exc:
+                obs.error = str(exc)
+
+            try:
+                exporter.enqueue(obs)
+            except Exception as obs_exc:
+                # do not break tracing if observation fails
+                print(f"[ObsWarning] Failed to create observation: {obs_exc}")
+
+        if asyncio.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def inner(*args, **kwargs):
+                start_time = time.time()
+                obs_id = random.getrandbits(63)
+                parent_obs_id = _current_observation_id.get()
+                token = _current_observation_id.set(obs_id)
+                parent_context = get_current()
+
+                with tracer.start_as_current_span(
+                    func_name, context=parent_context, kind=SpanKind.INTERNAL
+                ) as span:
+                    span.set_attribute("observation_id", str(obs_id))
+                    if parent_obs_id:
+                        span.set_attribute("parent_observation_id", str(parent_obs_id))
+
+                    if attributes:
+                        for k, v in attributes.items():
+                            span.set_attribute(k, v)
+
+                    if as_type and as_type.lower() == "runner":
+                        capture_candidate_agents()
+                        capture_tools()
+
+                    try:
+                        result = await func(*args, **kwargs)
+                        create_observation_record(
                             span,
                             args,
                             kwargs,
+                            start_time,
+                            obs_id,
+                            parent_obs_id,
                             result=result,
-                            obs_id=obs_id,
-                            parent_obs_id=parent_obs_id,
                         )
                         return result
                     except Exception as exc:
                         span.record_exception(exc)
                         span.set_status(Status(StatusCode.ERROR))
-                        create_observation(
+                        create_observation_record(
                             span,
                             args,
                             kwargs,
+                            start_time,
+                            obs_id,
+                            parent_obs_id,
                             exc=exc,
-                            obs_id=obs_id,
-                            parent_obs_id=parent_obs_id,
                         )
                         raise
+                    finally:
+                        span.set_attribute(
+                            "duration_ms", (time.time() - start_time) * 1000
+                        )
+                        _current_observation_id.reset(token)
 
-        return inner
+            return inner
+        else:
+
+            @functools.wraps(func)
+            def inner(*args, **kwargs):
+                start_time = time.time()
+                obs_id = random.getrandbits(63)
+                parent_obs_id = _current_observation_id.get()
+                token = _current_observation_id.set(obs_id)
+                parent_context = get_current()
+
+                with tracer.start_as_current_span(
+                    func_name, context=parent_context, kind=SpanKind.INTERNAL
+                ) as span:
+                    span.set_attribute("observation_id", str(obs_id))
+                    if parent_obs_id:
+                        span.set_attribute("parent_observation_id", str(parent_obs_id))
+
+                    if attributes:
+                        for k, v in attributes.items():
+                            span.set_attribute(k, v)
+
+                    if as_type and as_type.lower() == "runner":
+                        capture_candidate_agents()
+                        capture_tools()
+
+                    try:
+                        result = func(*args, **kwargs)
+                        create_observation_record(
+                            span,
+                            args,
+                            kwargs,
+                            start_time,
+                            obs_id,
+                            parent_obs_id,
+                            result=result,
+                        )
+                        return result
+                    except Exception as exc:
+                        span.record_exception(exc)
+                        span.set_status(Status(StatusCode.ERROR))
+                        create_observation_record(
+                            span,
+                            args,
+                            kwargs,
+                            start_time,
+                            obs_id,
+                            parent_obs_id,
+                            exc=exc,
+                        )
+                        raise
+                    finally:
+                        span.set_attribute(
+                            "duration_ms", (time.time() - start_time) * 1000
+                        )
+                        _current_observation_id.reset(token)
+
+            return inner
 
     return wrapper
 
