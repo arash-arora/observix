@@ -255,7 +255,19 @@ class ObservixEvaluator(Evaluator):
         import json
 
         try:
-            result_json = json.loads(response_text)
+
+            # Clean response text (remove markdown code blocks)
+            cleaned_response = response_text.strip()
+            if cleaned_response.startswith("```json"):
+                cleaned_response = cleaned_response[7:]
+            if cleaned_response.startswith("```"):
+                cleaned_response = cleaned_response[3:]
+            if cleaned_response.endswith("```"):
+                cleaned_response = cleaned_response[:-3]
+
+            cleaned_response = cleaned_response.strip()
+
+            result_json = json.loads(cleaned_response)
 
             # Handle varied root keys based on prompt type
             # ToolSelection returns "tool_selection": {...}
@@ -284,6 +296,8 @@ class ObservixEvaluator(Evaluator):
                 "full_evaluation_details": result_json,  # Store everything
                 "evidences": main_data.get("evidences"),
                 "feedbacks": main_data.get("feedbacks") or main_data.get("feedback"),
+                "evaluator_input": formatted_prompt,
+                "evaluator_output": response_text,
             }
 
             return EvaluationResult(
