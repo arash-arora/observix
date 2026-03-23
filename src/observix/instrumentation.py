@@ -393,6 +393,8 @@ def _clean_obj(obj: Any, depth=0, max_depth=3) -> Any:
         ctx = {"role": getattr(obj, "role"), "content": getattr(obj, "content")}
         if hasattr(obj, "id"):
             ctx["id"] = getattr(obj, "id")
+        if hasattr(obj, "tool_calls") and obj.tool_calls:
+            ctx["tool_calls"] = _clean_obj(obj.tool_calls, depth + 1, max_depth)
         return ctx
 
     # Filter out complex Client objects

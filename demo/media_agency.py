@@ -94,14 +94,14 @@ def researcher_node(state: AgentState):
 
     llm_with_tools = llm.bind_tools([google_search])
 
-    response = llm_with_tools.invoke(
-        [
-            SystemMessage(
-                content="You are a Researcher. Decide what to search. Use google_search tool when needed."
-            ),
-            state["messages"][-1],
-        ]
-    )
+    messages_to_llm = [
+        SystemMessage(
+            content="You are a Researcher. Decide what to search. Use google_search tool when needed. Once you have the search results, synthesize them into a research summary."
+        ),
+        state["messages"][-1],
+    ]
+
+    response = llm_with_tools.invoke(messages_to_llm)
 
     messages = [response]
 
@@ -126,6 +126,11 @@ def researcher_node(state: AgentState):
                 ToolMessage(content=str(tool_result), tool_call_id=call_id, name=name)
             )
 
+        # Consume the tool outputs and create the final research summary
+        messages_to_llm.extend(messages)
+        final_response = llm.invoke(messages_to_llm)
+        messages.append(final_response)
+
     return {"messages": messages}
 
 
@@ -140,7 +145,7 @@ def writer_node(state: AgentState):
             SystemMessage(
                 content="You are a Writer. Write a short blog post based on the research."
             ),
-            state["messages"][-1],
+            HumanMessage(content=str(state["messages"][-1].content)),
         ]
     )
 
@@ -156,7 +161,7 @@ def editor_node(state: AgentState):
     response = llm.invoke(
         [
             SystemMessage(content="You are an Editor. Review and polish the content."),
-            state["messages"][-1],
+            HumanMessage(content=str(state["messages"][-1].content)),
         ]
     )
 
@@ -174,7 +179,7 @@ def qc_node(state: AgentState):
             SystemMessage(
                 content="You are QC. Check for compliance. Respond 'APPROVED' if good."
             ),
-            state["messages"][-1],
+            HumanMessage(content=str(state["messages"][-1].content)),
         ]
     )
 

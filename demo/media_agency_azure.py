@@ -182,6 +182,9 @@ def researcher_node(state: AgentState):
     output_messages.append(AIMessage(content=ai_content))
 
     if message.tool_calls:
+        # Append the assistant's tool call message to history
+        openai_messages.append(message.model_dump(exclude_none=True))
+        
         for tool_call in message.tool_calls:
             name = tool_call.function.name
             args_str = tool_call.function.arguments
@@ -191,7 +194,6 @@ def researcher_node(state: AgentState):
                 try:
                     args = json.loads(args_str)
                     print(f"  [Researcher] Executing tool: {name}")
-                    # Direct execution -> Context propagated automatically
                     result = tools_map[name](**args)
                 except Exception as e:
                     result = f"Error: {e}"
@@ -201,6 +203,18 @@ def researcher_node(state: AgentState):
             output_messages.append(
                 ToolMessage(content=str(result), tool_call_id=call_id, name=name)
             )
+            openai_messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": str(result)
+            })
+
+        # Synthesize research summary
+        synthesis_response = client.chat.completions.create(
+            model=deployment_name, messages=openai_messages
+        )
+        synthesis_content = synthesis_response.choices[0].message.content or ""
+        output_messages.append(AIMessage(content=synthesis_content))
 
     return {"messages": output_messages}
 
@@ -216,7 +230,7 @@ def writer_node(state: AgentState):
             SystemMessage(
                 content="You are a Writer. Write a short blog post based on the research."
             ),
-            last_message,
+            HumanMessage(content=str(last_message.content)),
         ]
     )
     return {"messages": [response], "next": "editor"}
@@ -231,7 +245,7 @@ def editor_node(state: AgentState):
     response = invoke_native(
         [
             SystemMessage(content="You are an Editor. Review and polish the content."),
-            last_message,
+            HumanMessage(content=str(last_message.content)),
         ]
     )
     return {"messages": [response]}
@@ -249,7 +263,7 @@ def qc_node(state: AgentState):
             SystemMessage(
                 content="You are QC. Check for compliance. Respond 'APPROVED' if good."
             ),
-            last_message,
+            HumanMessage(content=str(last_message.content)),
         ]
     )
 
