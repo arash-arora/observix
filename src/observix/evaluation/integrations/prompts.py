@@ -519,7 +519,7 @@ SPECIAL INSTRUCTIONS FOR COMBINED TRACES:
 - Account for human-in-the-loop interactions if present
 - Focus on the overall journey effectiveness, not individual trace segments
 
-TRACE DATA TO ANALYZE:
+TRACE DATA TO ANALYZE (If applicable):
 {trace_data}
 
 CUSTOM EVALUATION CRITERIA:
@@ -530,20 +530,21 @@ Evaluate the workflow execution specifically against the user-defined custom met
 Focus on measuring adherence to the custom instructions and requirements.
 
 EVALUATION APPROACH:
-1. Parse and understand each custom metric/criterion provided
-2. Identify evidence in the trace that relates to each criterion
-3. Assess compliance level for each criterion
-4. Provide an overall score based on how well the workflow met the custom requirements
+1. Parse and understand each custom metric/criterion provided.
+2. Identify evidence in the custom criteria variables, inputs, outputs, or trace data that relates to each criterion.
+3. Assess compliance level for each criterion.
+4. Provide an overall score based on how well the requirements were met.
+5. IF TRACE DATA IS EMPTY: Do not penalize or fail the evaluation. Assess compliance entirely on the custom criteria context, inputs, and outputs provided.
 
 EVIDENCE REQUIREMENTS:
-- Map specific trace events/actions to each custom criterion
+- Map specific constraints, variables, or trace events to each custom criterion
 - Document instances of compliance and non-compliance
-- Extract relevant agent actions and tool usage that relate to custom metrics
+- Extract relevant agent actions or tool usage IF present in a trace
 - Avoid mentioning trace IDs, trace combinations, or technical metadata
 
 REASONING REQUIREMENTS:
 - Explain how well each custom criterion was met
-- Provide specific examples from the trace
+- Provide specific examples from the inputs, outputs, or trace
 - Justify the overall score based on criterion-by-criterion analysis
 - Highlight areas where custom requirements were exceeded or missed
 
@@ -554,7 +555,7 @@ FEEDBACK REQUIREMENTS:
 Expected JSON Output:
 {{
     "score": <int 10-100>,
-    "reasoning": "<Detailed analysis of how well the workflow met the user-defined custom evaluation criteria, with specific evidence from the trace>",
+    "reasoning": "<Detailed analysis of how well the workflow or provided inputs/outputs met the user-defined custom evaluation criteria>",
     "evidences": {{
         "evaluated_criteria": ["<criterion_1>", "<criterion_2>", "..."],
         "compliance_instances": ["<compliance_evidence_1>", "<compliance_evidence_2>", "..."],
@@ -578,7 +579,7 @@ Expected JSON Output:
     ]
 }}
 
-**IMPORTANT: Focus exclusively on the user-defined custom criteria. Base all assessments on actual evidence from the trace.**
+**IMPORTANT: Focus exclusively on the user-defined custom criteria. Base all assessments on actual evidence from the criteria context, inputs, outputs, or trace.**
 
 JSON:"""
 
